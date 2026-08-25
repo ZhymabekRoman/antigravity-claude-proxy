@@ -277,10 +277,10 @@ export const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful a
 
 // Model fallback mapping - maps primary model to fallback when quota exhausted
 export const MODEL_FALLBACK_MAP = {
+    'claude-opus-4-6-thinking': 'claude-sonnet-4-6',
     'gemini-3.1-pro-high': 'gemini-3.7-flash-tiered',
     'gemini-3.1-pro-low': 'gemini-3.7-flash-tiered',
     'gemini-3-flash': 'gemini-3.7-flash-tiered',
-    'claude-opus-4-6-thinking': 'gemini-3.7-flash-tiered',
     'claude-sonnet-4-6': 'gemini-3.7-flash-tiered',
     'gemini-3.6-flash-high': 'gemini-3.7-flash-tiered',
     'gemini-3.6-flash-low': 'gemini-3.7-flash-tiered',
