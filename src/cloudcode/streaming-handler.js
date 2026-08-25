@@ -84,10 +84,14 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     continue;
                 }
                 const minWaitMs = accountManager.getMinWaitTimeMs(model);
+                if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                    throw new Error(`All accounts rate-limited. Shortest wait: ${formatDuration(minWaitMs)}`);
+                }
                 const sleepTime = Math.min(minWaitMs, 3000);
-                logger.warn(`[CloudCode] All accounts rate-limited. Waiting ${sleepTime}ms before retry...`);
+                logger.warn(`[CloudCode] All accounts rate-limited. Waiting ${sleepTime}ms before retry (shortest wait: ${formatDuration(minWaitMs)})...`);
                 await sleep(sleepTime);
                 accountManager.clearExpiredLimits();
+                attempt--; // CRITICAL: Do not burn retry attempts while waiting for rate-limit cooldown
                 continue;
             }
 
