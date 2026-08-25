@@ -146,8 +146,8 @@ function parseError(error) {
         statusCode = 401;
         errorMessage = 'Authentication failed. Make sure Antigravity is running with a valid token.';
     } else if (error.message.includes('429') || error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('QUOTA_EXHAUSTED')) {
-        errorType = 'invalid_request_error';  // Use invalid_request_error to force client to purge/stop
-        statusCode = 400;  // Use 400 to ensure client does not retry (429 and 529 trigger retries)
+        errorType = 'rate_limit_error';
+        statusCode = 429;
 
         // Try to extract the quota reset time from the error
         const resetMatch = error.message.match(/quota will reset after ([\dh\dm\ds]+)/i);
@@ -723,16 +723,29 @@ app.post('/v1/messages', async (req, res) => {
             temperature
         } = req.body;
 
-        // Resolve model mapping if configured
-        let requestedModel = model || 'claude-3-5-sonnet-20241022';
+        // Resolve model mapping if configured or use built-in aliases
+        let requestedModel = model || 'gemini-3.7-flash-tiered';
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
+        } else if (requestedModel === 'gemini-3.7-flash-low') {
+            requestedModel = 'gemini-3.7-flash-tiered';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (requestedModel === 'gemini-3.7-flash-medium') {
+            requestedModel = 'gemini-3.7-flash-tiered';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
+            requestedModel = 'gemini-3.7-flash-tiered';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel.includes('claude') && (requestedModel.includes('sonnet') || requestedModel.includes('4-5') || requestedModel.includes('3-5') || requestedModel.includes('3-7'))) {
+            requestedModel = 'claude-sonnet-4-6';
+        } else if (requestedModel.includes('claude') && requestedModel.includes('opus')) {
+            requestedModel = 'claude-opus-4-6-thinking';
         }
 
-        const modelId = requestedModel;
+        let modelId = requestedModel;
 
         // Validate model ID before processing
         const { account: validationAccount } = accountManager.selectAccount();
@@ -742,7 +755,8 @@ app.post('/v1/messages', async (req, res) => {
             const valid = await isValidModel(modelId, token, projectId);
 
             if (!valid) {
-                throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
+                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to claude-sonnet-4-6`);
+                modelId = 'claude-sonnet-4-6';
             }
         }
 

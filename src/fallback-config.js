@@ -16,7 +16,7 @@ export { MODEL_FALLBACK_MAP };
  * @returns {string|null} Fallback model ID or null if no fallback exists
  */
 export function getFallbackModel(model) {
-    return MODEL_FALLBACK_MAP[model] || null;
+    return MODEL_FALLBACK_MAP[model] || 'gemini-3.7-flash-tiered';
 }
 
 /**

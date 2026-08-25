@@ -283,6 +283,7 @@ export async function* streamSSEResponse(response, originalModel) {
         type: 'message_delta',
         delta: { stop_reason: stopReason || 'end_turn', stop_sequence: null },
         usage: {
+            input_tokens: Math.max(0, inputTokens - cacheReadTokens),
             output_tokens: outputTokens,
             cache_read_input_tokens: cacheReadTokens,
             cache_creation_input_tokens: 0

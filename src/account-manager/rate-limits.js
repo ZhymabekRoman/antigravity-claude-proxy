@@ -127,10 +127,12 @@ export function markRateLimited(accounts, email, resetMs = null, modelId) {
         account.modelRateLimits = {};
     }
 
+    const inMemoryCooldownMs = Math.min(actualResetMs, 60000); // Max 60s in-memory cooldown to prevent account lockouts
+
     account.modelRateLimits[modelId] = {
         isRateLimited: true,
-        resetTime: Date.now() + actualResetMs,  // Actual reset time for decisions
-        actualResetMs: actualResetMs             // Original duration from API
+        resetTime: Date.now() + inMemoryCooldownMs, // Cooldown before trying again
+        actualResetMs: actualResetMs                // Original duration from API
     };
 
     // Track consecutive failures for progressive backoff (matches opencode-antigravity-auth)

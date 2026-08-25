@@ -32,9 +32,15 @@ export class QuotaTracker {
      * @returns {number|null} Remaining fraction (0-1) or null if unknown
      */
     getQuotaFraction(account, modelId) {
-        if (!account?.quota?.models?.[modelId]) return null;
-        const fraction = account.quota.models[modelId].remainingFraction;
-        return typeof fraction === 'number' ? fraction : null;
+        // If actively rate limited or in cooldown for this model, treat quota as 0
+        if (account?.modelRateLimits?.[modelId]?.isRateLimited && account.modelRateLimits[modelId].resetTime > Date.now()) {
+            return 0;
+        }
+        if (account?.quota?.models?.[modelId]) {
+            const fraction = account.quota.models[modelId].remainingFraction;
+            if (typeof fraction === 'number') return fraction;
+        }
+        return null;
     }
 
     /**
@@ -43,7 +49,8 @@ export class QuotaTracker {
      * @returns {boolean} True if quota data is fresh
      */
     isQuotaFresh(account) {
-        if (!account?.quota?.lastChecked) return false;
+        // If account has active rate limit, it is real-time fresh
+        if (!account?.quota?.lastChecked) return true;
         return (Date.now() - account.quota.lastChecked) < this.#config.staleMs;
     }
 

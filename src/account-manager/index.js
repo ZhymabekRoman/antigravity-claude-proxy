@@ -286,7 +286,7 @@ export class AccountManager {
      */
     markRateLimited(email, resetMs = null, modelId = null) {
         markLimited(this.#accounts, email, resetMs, modelId);
-        this.saveToDisk();
+        // Ephemeral rate limits stay in-memory only — do not poison accounts.json on disk
     }
 
     /**

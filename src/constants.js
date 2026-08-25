@@ -91,7 +91,7 @@ export const CLIENT_METADATA = {
 const ANTIGRAVITY_ENDPOINT_DAILY = 'https://daily-cloudcode-pa.googleapis.com';
 const ANTIGRAVITY_ENDPOINT_PROD = 'https://cloudcode-pa.googleapis.com';
 
-// Endpoint fallback order (daily → prod)
+// Endpoint fallback order (DAILY/STAGE first, PROD as fallback)
 export const ANTIGRAVITY_ENDPOINT_FALLBACKS = [
     ANTIGRAVITY_ENDPOINT_DAILY,
     ANTIGRAVITY_ENDPOINT_PROD
@@ -153,13 +153,13 @@ export const MAX_EMPTY_RESPONSE_RETRIES = 2; // Max retries for empty API respon
 export const MAX_ACCOUNTS = config?.maxAccounts || 10; // From config or 10
 
 // Rate limit wait thresholds
-export const MAX_WAIT_BEFORE_ERROR_MS = config?.maxWaitBeforeErrorMs || 120000; // From config or 2 minutes
+export const MAX_WAIT_BEFORE_ERROR_MS = config?.maxWaitBeforeErrorMs || 600000; // From config or 10 minutes
 
 // Retry deduplication - prevents thundering herd on concurrent rate limits
 export const RATE_LIMIT_DEDUP_WINDOW_MS = config?.rateLimitDedupWindowMs || 2000; // 2 seconds
 export const RATE_LIMIT_STATE_RESET_MS = config?.rateLimitStateResetMs || 120000; // 2 minutes - reset consecutive429 after inactivity
 export const FIRST_RETRY_DELAY_MS = config?.firstRetryDelayMs || 1000; // Quick 1s retry on first 429
-export const SWITCH_ACCOUNT_DELAY_MS = config?.switchAccountDelayMs || 5000; // Delay before switching accounts
+export const SWITCH_ACCOUNT_DELAY_MS = config?.switchAccountDelayMs || 50; // Optimized: 50ms delay for fast rotation (was 5000ms)
 
 // Consecutive failure tracking - extended cooldown after repeated failures
 export const MAX_CONSECUTIVE_FAILURES = config?.maxConsecutiveFailures || 3;
@@ -277,11 +277,16 @@ export const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful a
 
 // Model fallback mapping - maps primary model to fallback when quota exhausted
 export const MODEL_FALLBACK_MAP = {
-    'gemini-3.1-pro-high': 'claude-opus-4-6-thinking',
-    'gemini-3.1-pro-low': 'claude-sonnet-4-6',
-    'gemini-3-flash': 'claude-sonnet-4-6',
-    'claude-opus-4-6-thinking': 'gemini-3.1-pro-high',
-    'claude-sonnet-4-6': 'gemini-3-flash'
+    'gemini-3.1-pro-high': 'gemini-3.7-flash-tiered',
+    'gemini-3.1-pro-low': 'gemini-3.7-flash-tiered',
+    'gemini-3-flash': 'gemini-3.7-flash-tiered',
+    'claude-opus-4-6-thinking': 'gemini-3.7-flash-tiered',
+    'claude-sonnet-4-6': 'gemini-3.7-flash-tiered',
+    'gemini-3.6-flash-high': 'gemini-3.7-flash-tiered',
+    'gemini-3.6-flash-low': 'gemini-3.7-flash-tiered',
+    'gemini-3.6-flash-medium': 'gemini-3.7-flash-tiered',
+    'gemini-3.6-flash-tiered': 'gemini-3.7-flash-tiered',
+    'gemini-3.5-flash-low': 'gemini-3.7-flash-tiered'
 };
 
 // Default test models for each family (used by test suite)
