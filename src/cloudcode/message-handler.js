@@ -36,6 +36,7 @@ import {
     isAccountBanned,
     calculateSmartBackoff
 } from './rate-limit-state.js';
+import { sessionRouter, extractSessionKey } from './session-manager.js';
 
 /**
  * Send a non-streaming request to Cloud Code with multi-account support
@@ -95,8 +96,22 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
             throw new Error('No accounts available');
         }
 
-        // Select account using configured strategy
-        const { account, waitMs } = accountManager.selectAccount(model);
+        // Extract session key for sticky routing
+        const sessionKey = extractSessionKey(anthropicRequest);
+        const pinnedAccount = sessionRouter.getPinnedAccount(sessionKey, model, availableAccounts);
+
+        let account = pinnedAccount;
+        let waitMs = 0;
+
+        // If no pinned account or previous account is no longer healthy, select via strategy
+        if (!account) {
+            const selected = accountManager.selectAccount(model, { sessionKey });
+            account = selected.account;
+            waitMs = selected.waitMs;
+            if (account) {
+                sessionRouter.bindSession(sessionKey, account.email, model);
+            }
+        }
 
         // If strategy returns a wait time without an account, sleep and retry
         if (!account && waitMs > 0) {

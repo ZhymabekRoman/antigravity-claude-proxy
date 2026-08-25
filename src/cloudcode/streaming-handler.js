@@ -35,6 +35,7 @@ import {
     isAccountBanned,
     calculateSmartBackoff
 } from './rate-limit-state.js';
+import { sessionRouter, extractSessionKey } from './session-manager.js';
 import crypto from 'crypto';
 
 /**
@@ -94,8 +95,22 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             throw new Error('No accounts available');
         }
 
-        // Select account using configured strategy
-        const { account, waitMs } = accountManager.selectAccount(model);
+        // Extract session key for sticky routing
+        const sessionKey = extractSessionKey(anthropicRequest);
+        const pinnedAccount = sessionRouter.getPinnedAccount(sessionKey, model, availableAccounts);
+
+        let account = pinnedAccount;
+        let waitMs = 0;
+
+        // If no pinned account or previous account is no longer healthy, select via strategy
+        if (!account) {
+            const selected = accountManager.selectAccount(model, { sessionKey });
+            account = selected.account;
+            waitMs = selected.waitMs;
+            if (account) {
+                sessionRouter.bindSession(sessionKey, account.email, model);
+            }
+        }
 
         // If strategy returns a wait time without an account, sleep and retry
         if (!account && waitMs > 0) {
@@ -323,9 +338,21 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             const tStream = Date.now();
                             let outputTokens = 0;
                             for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model)) {
-                                // Count output tokens from message_delta usage
-                                if (event?.type === 'message_delta' && event?.usage?.output_tokens) {
-                                    outputTokens = event.usage.output_tokens;
+                                // Log Google TPU Prompt Cache metrics from message_delta (where Google emits final usage)
+                                if (event?.type === 'message_delta' && event?.usage) {
+                                    const u = event.usage;
+                                    const cached = u.cache_read_input_tokens || 0;
+                                    const input = u.input_tokens || 0;
+                                    const total = cached + input;
+                                    if (cached > 0) {
+                                        const pct = ((cached / total) * 100).toFixed(1);
+                                        logger.info(`[CACHE][TPU-HIT] ⚡ ${cached}/${total} tokens (${pct}%) served from Google TPU prompt cache`);
+                                    } else if (input > 0) {
+                                        logger.info(`[CACHE][TPU-MISS] ❄️ ${input} input tokens ingested cold (first turn / cache expired)`);
+                                    }
+                                    if (u.output_tokens) {
+                                        outputTokens = u.output_tokens;
+                                    }
                                 }
                                 yield event;
                             }
