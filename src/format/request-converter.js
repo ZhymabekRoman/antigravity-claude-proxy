@@ -189,12 +189,23 @@ export function convertAnthropicToGoogle(anthropicRequest) {
         } else if (isGeminiModel) {
             // Gemini thinking config (uses camelCase)
             // Clamp budget to model-specific max (e.g., Gemini 2.5 Flash max is 24,576)
+            const thinkingBudget = clampGeminiThinkingBudget(modelName, thinking?.budget_tokens);
             const thinkingConfig = {
                 includeThoughts: true,
-                thinkingBudget: clampGeminiThinkingBudget(modelName, thinking?.budget_tokens)
+                thinkingBudget
             };
             logger.debug(`[RequestConverter] Gemini thinking enabled with budget: ${thinkingConfig.thinkingBudget}`);
 
+            // CRITICAL FIX: Ensure maxOutputTokens >= thinkingBudget + responseHeadroom
+            // Gemini counts internal reasoning tokens against maxOutputTokens. If maxOutputTokens <= thinkingBudget,
+            // the model exhausts all tokens during thinking and halts with finishReason: MAX_TOKENS without emitting text.
+            const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens || 8192;
+            const minResponseTokens = 8192;
+            if (currentMaxTokens <= thinkingBudget) {
+                const adjustedMaxTokens = Math.min(thinkingBudget + minResponseTokens, GEMINI_MAX_OUTPUT_TOKENS);
+                logger.info(`[RequestConverter] Adjusting Gemini max_tokens from ${currentMaxTokens} to ${adjustedMaxTokens} for thinking budget ${thinkingBudget}`);
+                googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
+            }
 
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;
         }
