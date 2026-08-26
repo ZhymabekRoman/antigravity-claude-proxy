@@ -73,20 +73,53 @@ export function isNetworkError(error) {
 }
 
 /**
- * Throttled fetch that applies a configurable delay before each request
- * Only applies delay when requestThrottlingEnabled is true
+ * Global concurrency semaphore for Google API requests.
+ *
+ * All Claude Code sessions share the same proxy process, so they compete
+ * for the same pool of 7 Google accounts. Without a concurrency cap, 5+
+ * parallel sessions + subagents fire 20-50 simultaneous requests, every
+ * account gets 429'd, and agents hang indefinitely.
+ *
+ * This semaphore caps in-flight Google API requests to MAX_CONCURRENT_REQUESTS
+ * globally across all sessions. Excess requests queue instead of firing
+ * immediately, so accounts never see burst 429s from the proxy itself.
+ */
+const MAX_CONCURRENT_REQUESTS = config.maxConcurrentRequests || 7; // 1 per account
+let _activeRequests = 0;
+const _waitQueue = [];
+
+function _acquireSemaphore() {
+    if (_activeRequests < MAX_CONCURRENT_REQUESTS) {
+        _activeRequests++;
+        return Promise.resolve();
+    }
+    return new Promise(resolve => _waitQueue.push(resolve));
+}
+
+function _releaseSemaphore() {
+    if (_waitQueue.length > 0) {
+        const next = _waitQueue.shift();
+        next(); // hand slot to next waiter immediately
+    } else {
+        _activeRequests--;
+    }
+}
+
+/**
+ * Throttled fetch: globally rate-limited to MAX_CONCURRENT_REQUESTS
+ * in-flight at any moment. Prevents thundering herd 429s when multiple
+ * Claude Code sessions issue parallel requests.
  * @param {string|URL} url - The URL to fetch
  * @param {RequestInit} [options] - Fetch options
  * @returns {Promise<Response>} Fetch response
  */
 export async function throttledFetch(url, options) {
-    if (config.requestThrottlingEnabled) {
-        const delayMs = config.requestDelayMs || 200;
-        if (delayMs > 0) {
-            await sleep(delayMs);
-        }
+    await _acquireSemaphore();
+    try {
+        return await fetch(url, options);
+    } finally {
+        _releaseSemaphore();
     }
-    return fetch(url, options);
 }
 
 /**
