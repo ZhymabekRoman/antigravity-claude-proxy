@@ -21,37 +21,35 @@ const runtimeSessionStore = new Map();
 export function extractSessionKey(anthropicRequest) {
     if (!anthropicRequest) return 'anon';
 
-    // 1. Explicit metadata / user_id (Claude Code or custom clients)
-    if (anthropicRequest.metadata?.user_id) {
-        return `user:${anthropicRequest.metadata.user_id}`;
-    }
-
-    // 2. Explicit session ID in request
+    // 1. Explicit session ID in request
     if (anthropicRequest.session_id || anthropicRequest.sessionId) {
         return `session:${anthropicRequest.session_id || anthropicRequest.sessionId}`;
     }
 
-    // 3. Deterministic root message fingerprint (First user message + system prefix)
+    // 2. Deterministic fingerprint based on conversation structure and unique messages
     const messages = anthropicRequest.messages || [];
-    const firstUserMsg = messages.find(m => m.role === 'user');
-    const rootContent = typeof firstUserMsg?.content === 'string'
-        ? firstUserMsg.content
-        : JSON.stringify(firstUserMsg?.content || '');
+    if (messages.length === 0) return 'anon';
 
-    const systemContent = typeof anthropicRequest.system === 'string'
-        ? anthropicRequest.system
-        : JSON.stringify(anthropicRequest.system || '');
+    // Build unique fingerprint combining message count, first user prompt, and latest message snippet
+    const firstMsg = messages[0];
+    const lastMsg = messages[messages.length - 1];
 
-    if (rootContent.length > 0 || systemContent.length > 0) {
-        const hash = crypto.createHash('sha256')
-            .update(systemContent.slice(0, 300))
-            .update(rootContent.slice(0, 300))
-            .digest('hex')
-            .slice(0, 12);
-        return `conv:${hash}`;
-    }
+    const firstContent = typeof firstMsg?.content === 'string'
+        ? firstMsg.content
+        : JSON.stringify(firstMsg?.content || '').slice(0, 150);
 
-    return 'anon';
+    const lastContent = typeof lastMsg?.content === 'string'
+        ? lastMsg.content
+        : JSON.stringify(lastMsg?.content || '').slice(0, 150);
+
+    const hash = crypto.createHash('sha256')
+        .update(`len:${messages.length}`)
+        .update(`first:${firstContent}`)
+        .update(`last:${lastContent}`)
+        .digest('hex')
+        .slice(0, 12);
+
+    return `conv:${hash}`;
 }
 
 /**
