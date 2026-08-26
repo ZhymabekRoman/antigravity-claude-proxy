@@ -97,6 +97,10 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     accountManager.resetAllRateLimits();
                     continue;
                 }
+                const minWaitMs = accountManager.getMinWaitTimeMs(model);
+                if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
+                    throw new Error(`All accounts rate-limited for ${model}. Shortest wait: ${formatDuration(minWaitMs)}`);
+                }
                 const sleepTime = Math.min(minWaitMs, 3000);
                 totalRateLimitWaitMs += sleepTime;
                 if (totalRateLimitWaitMs > 30000) {
