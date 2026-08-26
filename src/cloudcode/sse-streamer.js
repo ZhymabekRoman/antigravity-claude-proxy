@@ -61,6 +61,13 @@ export async function* streamSSEResponse(response, originalModel) {
 
                 const candidates = innerResponse.candidates || [];
                 const firstCandidate = candidates[0] || {};
+
+                // Log server-side Google Search Grounding if active
+                const grounding = firstCandidate.groundingMetadata || innerResponse.groundingMetadata;
+                if (grounding?.webSearchQueries?.length > 0) {
+                    logger.info(`[GoogleSearch] 🔍 Server-side web grounding active: ${grounding.webSearchQueries.join(', ')}`);
+                }
+
                 const content = firstCandidate.content || {};
                 const parts = content.parts || [];
 
