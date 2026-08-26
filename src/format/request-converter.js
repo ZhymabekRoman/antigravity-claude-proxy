@@ -211,9 +211,20 @@ export function convertAnthropicToGoogle(anthropicRequest) {
         }
     }
 
+    // Filter out Claude Code's broken internal WebSearch tool (which fails on custom proxies)
+    // so the model directly and exclusively uses the working MCP web_search tool!
+    const filteredTools = tools ? tools.filter(tool => {
+        const name = tool.name || tool.function?.name || '';
+        if (name === 'WebSearch' || name === 'web_search_builtin') {
+            logger.info('[RequestConverter] 🛡️ Filtered broken internal WebSearch tool -> forcing MCP web_search');
+            return false;
+        }
+        return true;
+    }) : [];
+
     // Convert tools to Google format
-    if (tools && tools.length > 0) {
-        const functionDeclarations = tools.map((tool, idx) => {
+    if (filteredTools && filteredTools.length > 0) {
+        const functionDeclarations = filteredTools.map((tool, idx) => {
             // Extract name from various possible locations
             const name = tool.name || tool.function?.name || tool.custom?.name || `tool-${idx}`;
 
