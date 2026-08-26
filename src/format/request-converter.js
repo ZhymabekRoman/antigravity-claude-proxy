@@ -72,6 +72,21 @@ export function convertAnthropicToGoogle(anthropicRequest) {
         }
     }
 
+    // [Variant B] Anti-LaTeX Terminal Formatter Rule:
+    // Models frequently output raw LaTeX like $\to$, $\sim$, $\ge$ which looks broken in terminal TTYs.
+    // Inject rule to force plain Unicode symbols instead of LaTeX math syntax.
+    const antiLatexRule = 'You are interacting directly in a terminal CLI (TTY) environment. Never output LaTeX math expressions or syntax (do not use $\\to$, $\\sim$, $\\ge$, $\\le$, $\\approx$, etc., and do not wrap text or math in dollar signs $...$). Always use plain Unicode characters instead: →, ←, ~, ≥, ≤, ≠, ≈, ×, ±, %.';
+    if (!googleRequest.systemInstruction) {
+        googleRequest.systemInstruction = { parts: [{ text: antiLatexRule }] };
+    } else {
+        const lastPart = googleRequest.systemInstruction.parts[googleRequest.systemInstruction.parts.length - 1];
+        if (lastPart && lastPart.text) {
+            lastPart.text = `${lastPart.text}\n\n${antiLatexRule}`;
+        } else {
+            googleRequest.systemInstruction.parts.push({ text: antiLatexRule });
+        }
+    }
+
     // Add interleaved thinking hint for Claude thinking models with tools
     if (isClaudeModel && isThinking && tools && tools.length > 0) {
         const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';

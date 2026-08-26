@@ -724,6 +724,7 @@ app.post('/v1/messages', async (req, res) => {
         } = req.body;
 
         // Resolve model mapping if configured or use built-in aliases
+        // By default, map ALL incoming models (including claude-sonnet-4-5 and aliases) to gemini-3.7-flash-tiered
         let requestedModel = model || 'gemini-3.7-flash-tiered';
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
@@ -739,10 +740,12 @@ app.post('/v1/messages', async (req, res) => {
         } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel.includes('claude') && (requestedModel.includes('sonnet') || requestedModel.includes('4-5') || requestedModel.includes('3-5') || requestedModel.includes('3-7'))) {
-            requestedModel = 'claude-sonnet-4-6';
-        } else if (requestedModel.includes('claude') && requestedModel.includes('opus')) {
-            requestedModel = 'claude-opus-4-6-thinking';
+        } else if (requestedModel.includes('opus')) {
+            requestedModel = 'gemini-3.7-flash-tiered';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel.includes('claude') || requestedModel.includes('sonnet') || requestedModel.includes('haiku')) {
+            // Default-map all Claude / Sonnet / Haiku subagent and main requests to gemini-3.7-flash-tiered
+            requestedModel = 'gemini-3.7-flash-tiered';
         }
 
         let modelId = requestedModel;
@@ -755,8 +758,8 @@ app.post('/v1/messages', async (req, res) => {
             const valid = await isValidModel(modelId, token, projectId);
 
             if (!valid) {
-                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to claude-sonnet-4-6`);
-                modelId = 'claude-sonnet-4-6';
+                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to gemini-3.7-flash-tiered`);
+                modelId = 'gemini-3.7-flash-tiered';
             }
         }
 
