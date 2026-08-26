@@ -740,11 +740,11 @@ app.post('/v1/messages', async (req, res) => {
         } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel.includes('sonnet')) {
+            requestedModel = 'claude-sonnet-4-6';
         } else if (requestedModel.includes('opus')) {
-            requestedModel = 'gemini-3.7-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel.includes('claude') || requestedModel.includes('sonnet') || requestedModel.includes('haiku')) {
-            // Default-map all Claude / Sonnet / Haiku subagent and main requests to gemini-3.7-flash-tiered
+            requestedModel = 'claude-opus-4-7';
+        } else if (requestedModel.includes('haiku')) {
             requestedModel = 'gemini-3.7-flash-tiered';
         }
 

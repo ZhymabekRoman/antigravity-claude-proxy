@@ -53,6 +53,7 @@ import crypto from 'crypto';
  */
 export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
     const model = anthropicRequest.model;
+    let totalRateLimitWaitMs = 0;
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
@@ -96,12 +97,12 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     accountManager.resetAllRateLimits();
                     continue;
                 }
-                const minWaitMs = accountManager.getMinWaitTimeMs(model);
-                if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
-                    throw new Error(`All accounts rate-limited. Shortest wait: ${formatDuration(minWaitMs)}`);
-                }
                 const sleepTime = Math.min(minWaitMs, 3000);
-                logger.warn(`[CloudCode] All accounts rate-limited. Waiting ${sleepTime}ms before retry (shortest wait: ${formatDuration(minWaitMs)})...`);
+                totalRateLimitWaitMs += sleepTime;
+                if (totalRateLimitWaitMs > 30000) {
+                    throw new Error(`All accounts rate-limited for ${model}. Please try again shortly or switch model.`);
+                }
+                logger.warn(`[CloudCode] All accounts rate-limited. Waiting ${sleepTime}ms before retry (${totalRateLimitWaitMs}ms total, shortest wait: ${formatDuration(minWaitMs)})...`);
                 await sleep(sleepTime);
                 accountManager.clearExpiredLimits();
                 attempt--; // CRITICAL: Do not burn retry attempts while waiting for rate-limit cooldown

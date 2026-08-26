@@ -271,7 +271,7 @@ export const OAUTH_CONFIG = {
         'openid'
     ]
 };
-export const OAUTH_REDIRECT_URI = 'https://antigravity.google/oauth-callback';
+export const OAUTH_REDIRECT_URI = `http://localhost:${OAUTH_CONFIG.callbackPort}/oauth-callback`;
 
 // Minimal Antigravity system instruction (from CLIProxyAPI)
 // Only includes the essential identity portion to reduce token usage and improve response quality

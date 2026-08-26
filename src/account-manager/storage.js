@@ -124,8 +124,23 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
         const dir = dirname(configPath);
         await mkdir(dir, { recursive: true });
 
+        // Read current disk content and merge any newly added accounts from CLI
+        let mergedAccounts = [...accounts];
+        try {
+            const currentDisk = JSON.parse(await readFile(configPath, 'utf-8'));
+            if (Array.isArray(currentDisk.accounts)) {
+                for (const diskAcc of currentDisk.accounts) {
+                    if (diskAcc.email && !mergedAccounts.some(a => a.email === diskAcc.email)) {
+                        mergedAccounts.push(diskAcc);
+                    }
+                }
+            }
+        } catch {
+            // Ignore read errors if file doesn't exist
+        }
+
         const config = {
-            accounts: accounts.map(acc => ({
+            accounts: mergedAccounts.map(acc => ({
                 email: acc.email,
                 source: acc.source,
                 enabled: acc.enabled !== false,
