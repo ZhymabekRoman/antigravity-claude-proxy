@@ -244,19 +244,7 @@ export function convertAnthropicToGoogle(anthropicRequest) {
             };
         });
 
-        const hasWebSearchTool = tools.some(t => {
-            const n = (t.name || t.function?.name || '').toLowerCase();
-            return n.includes('search') || n.includes('google') || n.includes('web');
-        });
-
-        const toolsArray = [];
-        if (hasWebSearchTool) {
-            toolsArray.push({ googleSearch: {} });
-            logger.info('[RequestConverter] 🌐 Injected server-side Google Search Grounding');
-        }
-
-        toolsArray.push({ functionDeclarations });
-        googleRequest.tools = toolsArray;
+        googleRequest.tools = [{ functionDeclarations }];
         logger.debug(`[RequestConverter] Tools: ${JSON.stringify(googleRequest.tools).substring(0, 300)}`);
 
         // For Claude models, set functionCallingConfig.mode = "VALIDATED"
