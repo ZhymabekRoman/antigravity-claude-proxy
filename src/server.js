@@ -801,23 +801,19 @@ app.post('/v1/messages', async (req, res) => {
             temperature
         };
 
-        logger.info(`[API] Request for model: ${request.model}, stream: ${!!stream}`);
-
-        // Debug: Log message structure to diagnose tool_use/tool_result ordering
-        if (logger.isDebugEnabled) {
-            logger.debug('[API] Message structure:');
-            messages.forEach((msg, i) => {
-                const contentTypes = Array.isArray(msg.content)
-                    ? msg.content.map(c => c.type || 'text').join(', ')
-                    : (typeof msg.content === 'string' ? 'text' : 'unknown');
-                logger.debug(`  [${i}] ${msg.role}: ${contentTypes}`);
-            });
-        }
+        const promptPreview = messages.length > 0
+            ? (typeof messages[messages.length - 1]?.content === 'string'
+                ? messages[messages.length - 1].content.slice(0, 80).replace(/\n/g, ' ')
+                : JSON.stringify(messages[messages.length - 1]?.content || '').slice(0, 80))
+            : '(empty)';
+        const toolsCount = tools?.length || 0;
+        logger.info(`[API] 📥 Request: model=${request.model} | msgs=${messages.length} | tools=${toolsCount} | prompt="${promptPreview}" | stream=${!!stream}`);
 
         if (stream) {
             // Handle streaming response
             // Do NOT flush headers immediately. We need to wait for the first chunk
             // to ensure we don't send a 200 OK if the upstream fails immediately (e.g. 429/503).
+            const streamStart = Date.now();
 
             try {
                 // Initialize the generator
@@ -836,28 +832,45 @@ app.post('/v1/messages', async (req, res) => {
                 res.setHeader('X-Accel-Buffering', 'no');
                 res.flushHeaders();
 
+                let eventCount = 0;
                 // If the generator isn't done, send the first chunk
                 if (!firstResult.done) {
+                    eventCount++;
                     res.write(`event: ${firstResult.value.type}\ndata: ${JSON.stringify(firstResult.value)}\n\n`);
                     if (res.flush) res.flush();
                 }
 
                 // Continue with the rest of the stream
                 for await (const event of generator) {
+                    eventCount++;
                     res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
                     if (res.flush) res.flush();
                 }
                 
+                const totalStreamDuration = Date.now() - streamStart;
+                logger.info(`[API] 📤 Stream complete: ${eventCount} SSE events sent in ${totalStreamDuration}ms for "${promptPreview}"`);
                 res.end();
 
             } catch (error) {
                 // If we haven't sent headers yet, we can send a proper error status
                 if (!res.headersSent) {
-                    logger.error('[API] Initial stream error:', error);
+                    logger.error(`[API] ❌ Stream error before headers sent (${Date.now() - streamStart}ms):`, error.message);
                     const { errorType, statusCode, errorMessage } = parseError(error);
                     
                     return res.status(statusCode).json({
                         type: 'error',
+                        error: {
+                            type: errorType,
+                            message: errorMessage
+                        }
+                    });
+                } else {
+                    logger.error(`[API] ❌ Stream error during transmission (${Date.now() - streamStart}ms):`, error.message);
+                    res.end();
+                }
+            }
+            return;
+        }
                         error: {
                             type: errorType,
                             message: errorMessage

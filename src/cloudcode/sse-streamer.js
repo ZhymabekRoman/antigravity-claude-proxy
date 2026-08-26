@@ -33,6 +33,8 @@ export async function* streamSSEResponse(response, originalModel) {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    let hasEmittedTextOrTool = false;
+
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -48,15 +50,14 @@ export async function* streamSSEResponse(response, originalModel) {
             if (!jsonText) continue;
 
             try {
-                const data = JSON.parse(jsonText);
-                const innerResponse = data.response || data;
+                const googleEvent = JSON.parse(jsonText);
+                const innerResponse = googleEvent.response || googleEvent;
 
                 // Extract usage metadata (including cache tokens)
-                const usage = innerResponse.usageMetadata;
-                if (usage) {
-                    inputTokens = usage.promptTokenCount || inputTokens;
-                    outputTokens = usage.candidatesTokenCount || outputTokens;
-                    cacheReadTokens = usage.cachedContentTokenCount || cacheReadTokens;
+                if (innerResponse.usageMetadata) {
+                    inputTokens = innerResponse.usageMetadata.promptTokenCount || 0;
+                    outputTokens = innerResponse.usageMetadata.candidatesTokenCount || 0;
+                    cacheReadTokens = innerResponse.usageMetadata.cachedContentTokenCount || 0;
                 }
 
                 const candidates = innerResponse.candidates || [];
@@ -145,6 +146,8 @@ export async function* streamSSEResponse(response, originalModel) {
                             continue;
                         }
 
+                        hasEmittedTextOrTool = true;
+
                         // Handle regular text
                         if (currentBlockType !== 'text') {
                             if (currentBlockType === 'thinking' && currentThinkingSignature) {
@@ -174,6 +177,7 @@ export async function* streamSSEResponse(response, originalModel) {
                         };
 
                     } else if (part.functionCall) {
+                        hasEmittedTextOrTool = true;
                         // Handle tool use
                         // For Gemini 3+, capture thoughtSignature from the functionCall part
                         // The signature is a sibling to functionCall, not inside it
@@ -227,15 +231,8 @@ export async function* streamSSEResponse(response, originalModel) {
                             }
                         };
                     } else if (part.inlineData) {
+                        hasEmittedTextOrTool = true;
                         // Handle image content from Google format
-                        if (currentBlockType === 'thinking' && currentThinkingSignature) {
-                            yield {
-                                type: 'content_block_delta',
-                                index: blockIndex,
-                                delta: { type: 'signature_delta', signature: currentThinkingSignature }
-                            };
-                            currentThinkingSignature = '';
-                        }
                         if (currentBlockType !== null) {
                             yield { type: 'content_block_stop', index: blockIndex };
                             blockIndex++;
@@ -250,7 +247,7 @@ export async function* streamSSEResponse(response, originalModel) {
                                 type: 'image',
                                 source: {
                                     type: 'base64',
-                                    media_type: part.inlineData.mimeType,
+                                    media_type: part.inlineData.mimeType || 'image/png',
                                     data: part.inlineData.data
                                 }
                             }
@@ -262,8 +259,8 @@ export async function* streamSSEResponse(response, originalModel) {
                     }
                 }
 
-                // Check finish reason (only if not already set by tool_use)
-                if (firstCandidate.finishReason && !stopReason) {
+                // Check finish reason
+                if (firstCandidate.finishReason) {
                     if (firstCandidate.finishReason === 'MAX_TOKENS') {
                         stopReason = 'max_tokens';
                     } else if (firstCandidate.finishReason === 'STOP') {
@@ -291,6 +288,24 @@ export async function* streamSSEResponse(response, originalModel) {
                     delta: { type: 'signature_delta', signature: currentThinkingSignature }
                 };
             }
+            yield { type: 'content_block_stop', index: blockIndex };
+        }
+
+        // RECOVERY: If model emitted ONLY thinking and NO text/tool_use,
+        // yield a fallback text block so Claude Code does not stop with empty response!
+        if (!hasEmittedTextOrTool) {
+            blockIndex++;
+            logger.info('[CloudCode] 💡 Model emitted reasoning without text, yielding completion text block');
+            yield {
+                type: 'content_block_start',
+                index: blockIndex,
+                content_block: { type: 'text', text: '' }
+            };
+            yield {
+                type: 'content_block_delta',
+                index: blockIndex,
+                delta: { type: 'text_delta', text: 'Thinking complete.' }
+            };
             yield { type: 'content_block_stop', index: blockIndex };
         }
     }
