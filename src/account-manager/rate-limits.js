@@ -127,7 +127,7 @@ export function markRateLimited(accounts, email, resetMs = null, modelId) {
         account.modelRateLimits = {};
     }
 
-    const inMemoryCooldownMs = Math.min(actualResetMs, 60000); // Max 60s in-memory cooldown to prevent account lockouts
+    const inMemoryCooldownMs = Math.min(actualResetMs, 10000); // Max 10s in-memory cooldown for instant recovery
 
     account.modelRateLimits[modelId] = {
         isRateLimited: true,

@@ -177,8 +177,9 @@ export const BACKOFF_BY_ERROR_TYPE = {
     UNKNOWN: 60000                   // 1 minute
 };
 
-// Progressive backoff tiers for QUOTA_EXHAUSTED (60s, 5m, 30m, 2h)
-export const QUOTA_EXHAUSTED_BACKOFF_TIERS_MS = [60000, 300000, 1800000, 7200000];
+// Progressive backoff tiers for transient RPM 429 bursts (2s, 5s, 10s, 20s)
+// Prevents locking out accounts for hours when 429 is merely a per-second rate limit
+export const QUOTA_EXHAUSTED_BACKOFF_TIERS_MS = [2000, 5000, 10000, 20000];
 
 // Minimum backoff floor to prevent "Available in 0s" loops (matches opencode-antigravity-auth)
 export const MIN_BACKOFF_MS = 2000;
