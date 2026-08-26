@@ -866,30 +866,15 @@ app.post('/v1/messages', async (req, res) => {
                     });
                 } else {
                     logger.error(`[API] ❌ Stream error during transmission (${Date.now() - streamStart}ms):`, error.message);
+                    const { errorType, errorMessage } = parseError(error);
+                    res.write(`event: error\ndata: ${JSON.stringify({
+                        type: 'error',
+                        error: { type: errorType, message: errorMessage }
+                    })}\n\n`);
                     res.end();
                 }
             }
             return;
-        }
-                        error: {
-                            type: errorType,
-                            message: errorMessage
-                        }
-                    });
-                }
-                
-                // If headers were already sent (should only happen if error occurs mid-stream),
-                // we have to fallback to SSE error event
-                logger.error('[API] Mid-stream error:', error);
-                const { errorType, errorMessage } = parseError(error);
-
-                res.write(`event: error\ndata: ${JSON.stringify({
-                    type: 'error',
-                    error: { type: errorType, message: errorMessage }
-                })}\n\n`);
-                res.end();
-            }
-
         } else {
             // Handle non-streaming response
             const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
