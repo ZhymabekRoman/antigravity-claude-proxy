@@ -79,6 +79,14 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
             }
 
             if (accountManager.isAllRateLimited(model)) {
+                if (fallbackEnabled) {
+                    const fallbackModel = getFallbackModel(model);
+                    if (fallbackModel && fallbackModel !== model) {
+                        logger.info(`[CloudCode] 🔀 All accounts rate-limited for ${model}, dynamically falling back to ${fallbackModel}`);
+                        const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
+                        return await sendMessage(fallbackRequest, accountManager, false);
+                    }
+                }
                 if (attempt === 0) {
                     logger.info(`[CloudCode] Optimistically clearing stale rate limits for ${model}`);
                     accountManager.resetAllRateLimits();

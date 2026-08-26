@@ -22,9 +22,9 @@ import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
 
-// Parse fallback flag directly from command line args to avoid circular dependency
+// Parse fallback flag directly from command line args to avoid circular dependency (defaults to true)
 const args = process.argv.slice(2);
-const FALLBACK_ENABLED = args.includes('--fallback') || process.env.FALLBACK === 'true';
+const FALLBACK_ENABLED = args.includes('--fallback') || process.env.FALLBACK !== 'false';
 
 // Parse --strategy flag (format: --strategy=sticky or --strategy sticky)
 let STRATEGY_OVERRIDE = null;
