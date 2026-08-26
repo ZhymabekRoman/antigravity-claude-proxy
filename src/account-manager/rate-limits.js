@@ -98,12 +98,16 @@ export function clearExpiredLimits(accounts) {
 export function resetAllRateLimits(accounts) {
     for (const account of accounts) {
         if (account.modelRateLimits) {
-            for (const key of Object.keys(account.modelRateLimits)) {
+            for (const [key, limit] of Object.entries(account.modelRateLimits)) {
+                // Do not clear genuine daily/weekly quota lockouts (> 1 hour)
+                if (limit?.resetTime && (limit.resetTime - Date.now() > 3600000)) {
+                    continue;
+                }
                 account.modelRateLimits[key] = { isRateLimited: false, resetTime: null };
             }
         }
     }
-    logger.warn('[AccountManager] Reset all rate limits for optimistic retry');
+    logger.warn('[AccountManager] Reset transient rate limits for optimistic retry');
 }
 
 /**

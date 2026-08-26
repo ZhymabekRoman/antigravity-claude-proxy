@@ -34,6 +34,7 @@ import {
     clearTokenCache as clearToken
 } from './credentials.js';
 import { createStrategy, getStrategyLabel, DEFAULT_STRATEGY } from './strategies/index.js';
+import { getModelQuotas } from '../cloudcode/model-api.js';
 import { logger } from '../utils/logger.js';
 
 export class AccountManager {
@@ -92,6 +93,56 @@ export class AccountManager {
         this.clearExpiredLimits();
 
         this.#initialized = true;
+
+        // Proactively sync quotas from Google API in background to lock out 0% quota accounts
+        this.syncAccountQuotas().catch(err => {
+            logger.debug('[AccountManager] Initial quota sync error:', err.message);
+        });
+
+        // Periodic quota sync every 2 minutes
+        setInterval(() => {
+            this.syncAccountQuotas().catch(err => {
+                logger.debug('[AccountManager] Periodic quota sync error:', err.message);
+            });
+        }, 120000);
+    }
+
+    /**
+     * Proactively sync quota information from Google Cloud Code API for all accounts
+     * Excludes 0% quota accounts until their real reset date so they aren't hammered with 429s.
+     */
+    async syncAccountQuotas() {
+        const enabledAccounts = this.#accounts.filter(a => a.enabled !== false && !a.isInvalid);
+        for (const account of enabledAccounts) {
+            try {
+                const token = await this.getTokenForAccount(account);
+                const projectId = account.subscription?.projectId || null;
+                const quotas = await getModelQuotas(token, projectId);
+                if (quotas && Object.keys(quotas).length > 0) {
+                    account.quota = {
+                        models: quotas,
+                        lastChecked: Date.now()
+                    };
+                    // Check for zero-quota models and mark rate limited until real resetTime
+                    for (const [modelId, info] of Object.entries(quotas)) {
+                        if (info.remainingFraction === 0 && info.resetTime) {
+                            const resetTimestamp = new Date(info.resetTime).getTime();
+                            if (resetTimestamp > Date.now()) {
+                                if (!account.modelRateLimits) account.modelRateLimits = {};
+                                account.modelRateLimits[modelId] = {
+                                    isRateLimited: true,
+                                    resetTime: resetTimestamp,
+                                    actualResetMs: resetTimestamp - Date.now()
+                                };
+                                logger.warn(`[AccountManager] 🚫 Account ${account.email} has 0% quota for ${modelId}. Locked until Google reset: ${info.resetTime}`);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                logger.debug(`[AccountManager] Quota sync skipped for ${account.email}: ${err.message}`);
+            }
+        }
     }
 
     /**
