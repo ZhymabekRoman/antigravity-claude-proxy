@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { config } from '../config.js';
+import { logger } from './logger.js';
 
 /**
  * Shared Utility Functions
@@ -87,11 +88,37 @@ export function isNetworkError(error) {
 const MAX_CONCURRENT_REQUESTS = config.maxConcurrentRequests || 7; // 1 per account
 let _activeRequests = 0;
 const _waitQueue = [];
+let _totalQueued = 0;
+let _totalServed = 0;
+let _totalDropped429 = 0;
+
+/** Expose live semaphore stats for /health and logging */
+export function getSemaphoreStats() {
+    return {
+        active: _activeRequests,
+        queued: _waitQueue.length,
+        max: MAX_CONCURRENT_REQUESTS,
+        totalServed: _totalServed,
+        totalQueued: _totalQueued,
+        total429s: _totalDropped429
+    };
+}
+
+/** Increment 429 counter (called from streaming-handler) */
+export function recordRateLimitHit() {
+    _totalDropped429++;
+}
 
 function _acquireSemaphore() {
     if (_activeRequests < MAX_CONCURRENT_REQUESTS) {
         _activeRequests++;
+        _totalServed++;
         return Promise.resolve();
+    }
+    // Queue is full - log once every 5 queued items to avoid spam
+    _totalQueued++;
+    if (_totalQueued % 5 === 1 || _waitQueue.length >= 5) {
+        logger.warn(`[Semaphore] 🚦 Queue depth: ${_waitQueue.length + 1} | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS} | Total queued: ${_totalQueued}`);
     }
     return new Promise(resolve => _waitQueue.push(resolve));
 }
@@ -99,9 +126,15 @@ function _acquireSemaphore() {
 function _releaseSemaphore() {
     if (_waitQueue.length > 0) {
         const next = _waitQueue.shift();
-        next(); // hand slot to next waiter immediately
+        // Active count stays same - we pass the slot directly
+        _totalServed++;
+        next();
+        if (_waitQueue.length > 0) {
+            logger.debug(`[Semaphore] ✅ Slot released → handed to next waiter | Queue remaining: ${_waitQueue.length} | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS}`);
+        }
     } else {
         _activeRequests--;
+        logger.debug(`[Semaphore] ✅ Slot released | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS} | Queue: empty`);
     }
 }
 
@@ -114,7 +147,13 @@ function _releaseSemaphore() {
  * @returns {Promise<Response>} Fetch response
  */
 export async function throttledFetch(url, options) {
+    const queuedAt = Date.now();
+    const wasQueued = _activeRequests >= MAX_CONCURRENT_REQUESTS;
     await _acquireSemaphore();
+    const waitedMs = Date.now() - queuedAt;
+    if (wasQueued && waitedMs > 100) {
+        logger.info(`[Semaphore] ⏳ Request waited ${waitedMs}ms in queue | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS}`);
+    }
     try {
         return await fetch(url, options);
     } finally {

@@ -19,7 +19,7 @@ import {
     BACKOFF_BY_ERROR_TYPE
 } from '../constants.js';
 import { isRateLimitError, isAuthError, isEmptyResponseError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
-import { formatDuration, sleep, isNetworkError, throttledFetch } from '../utils/helpers.js';
+import { formatDuration, sleep, isNetworkError, throttledFetch, getSemaphoreStats, recordRateLimitHit } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
@@ -64,6 +64,10 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         // Get available accounts for this model
         const availableAccounts = accountManager.getAvailableAccounts(model);
+        const totalAccounts = accountManager.getAccountCount();
+        const lockedCount = totalAccounts - availableAccounts.length;
+        const semStats = getSemaphoreStats();
+        logger.debug(`[Pool] model=${model} attempt=${attempt + 1} | available=${availableAccounts.length}/${totalAccounts} (locked=${lockedCount}) | semaphore: active=${semStats.active}/${semStats.max} queued=${semStats.queued} served=${semStats.totalServed} 429s=${semStats.total429s}`);
 
         // If no accounts available, check if we should wait or throw error
         if (availableAccounts.length === 0) {
@@ -203,8 +207,11 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         }
 
                         if (response.status === 429 || (response.status === 400 && isRateLimitError({ message: errorText }))) {
+                            recordRateLimitHit(); // track global 429 counter
                             const resetMs = parseResetTime(response, errorText);
                             const consecutiveFailures = accountManager.getConsecutiveFailures?.(account.email) || 0;
+                            const semStats = getSemaphoreStats();
+                            logger.info(`[Pool] 429 on ${account.email} | pool: ${accountManager.getAvailableAccounts(model).length - 1}/${accountManager.getAccountCount()} now available | sem: active=${semStats.active}/${semStats.max} queued=${semStats.queued} total429s=${semStats.total429s}`);
 
                             // Check if capacity issue (NOT quota) - retry same endpoint with progressive backoff
                             if (isModelCapacityExhausted(errorText)) {
