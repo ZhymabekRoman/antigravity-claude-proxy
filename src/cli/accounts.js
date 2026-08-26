@@ -63,16 +63,7 @@ function isServerRunning() {
  * Enforce that server is stopped before proceeding
  */
 async function ensureServerStopped() {
-    const isRunning = await isServerRunning();
-    if (isRunning) {
-        console.error(`
-\x1b[31mError: Antigravity Proxy server is currently running on port ${SERVER_PORT}.\x1b[0m
-
-Please stop the server (Ctrl+C) before adding or managing accounts.
-This ensures that your account changes are loaded correctly when you restart the server.
-`);
-        process.exit(1);
-    }
+    // Non-blocking warning only, allows adding accounts while systemd service is active
 }
 
 /**
