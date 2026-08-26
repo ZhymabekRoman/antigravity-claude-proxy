@@ -116,11 +116,21 @@ export async function* streamSSEResponse(response, originalModel) {
                             cacheThinkingSignature(signature, modelFamily);
                         }
 
-                        yield {
-                            type: 'content_block_delta',
-                            index: blockIndex,
-                            delta: { type: 'thinking_delta', thinking: text }
-                        };
+                        if (text) {
+                            yield {
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: { type: 'thinking_delta', thinking: text }
+                            };
+                        } else if (signature && currentBlockType === 'thinking') {
+                            // Instant Thinking Pulse: when Gemini emits silent reasoning tokens or signature
+                            // with empty text, yield a pulse so Claude Code immediately displays the thinking state
+                            yield {
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: { type: 'thinking_delta', thinking: ' ' }
+                            };
+                        }
 
                     } else if (part.text !== undefined) {
                         // Skip empty text parts (but preserve whitespace-only chunks for proper spacing)
