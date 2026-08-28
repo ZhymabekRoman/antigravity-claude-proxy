@@ -21,31 +21,39 @@ const runtimeSessionStore = new Map();
 export function extractSessionKey(anthropicRequest) {
     if (!anthropicRequest) return 'anon';
 
-    // 1. Explicit session ID in request
+    // 1. Explicit session ID in request — most stable, use as-is
     if (anthropicRequest.session_id || anthropicRequest.sessionId) {
         return `session:${anthropicRequest.session_id || anthropicRequest.sessionId}`;
     }
 
-    // 2. Deterministic fingerprint based on conversation structure and unique messages
+    // 2. Stable deterministic fingerprint based on IMMUTABLE parts of the conversation.
+    //
+    //    OLD: used messages.length + lastMsg.content — BOTH change on every agent turn
+    //    (each tool call adds messages), causing a new session key per turn and
+    //    destroying sticky routing / TPU prompt cache continuity.
+    //
+    //    NEW: use only parts that never change across turns of the same conversation:
+    //      - system prompt (set once at start, constant throughout)
+    //      - first user message (the original user request, never mutated)
+    //    This produces the same fingerprint for all turns of the same agent session.
     const messages = anthropicRequest.messages || [];
     if (messages.length === 0) return 'anon';
 
-    // Build unique fingerprint combining message count, first user prompt, and latest message snippet
+    // Extract system prompt (can be string or structured array)
+    const system = anthropicRequest.system || '';
+    const systemStr = typeof system === 'string'
+        ? system.slice(0, 200)
+        : JSON.stringify(system).slice(0, 200);
+
+    // Extract first user message only — stable across all turns
     const firstMsg = messages[0];
-    const lastMsg = messages[messages.length - 1];
-
     const firstContent = typeof firstMsg?.content === 'string'
-        ? firstMsg.content
-        : JSON.stringify(firstMsg?.content || '').slice(0, 150);
-
-    const lastContent = typeof lastMsg?.content === 'string'
-        ? lastMsg.content
-        : JSON.stringify(lastMsg?.content || '').slice(0, 150);
+        ? firstMsg.content.slice(0, 200)
+        : JSON.stringify(firstMsg?.content || '').slice(0, 200);
 
     const hash = crypto.createHash('sha256')
-        .update(`len:${messages.length}`)
+        .update(`sys:${systemStr}`)
         .update(`first:${firstContent}`)
-        .update(`last:${lastContent}`)
         .digest('hex')
         .slice(0, 12);
 

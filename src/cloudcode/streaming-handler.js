@@ -57,7 +57,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
-    const maxAttempts = Math.max(MAX_RETRIES, accountManager.getAccountCount() + 1);
+    const maxAttempts = MAX_RETRIES;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         // Clear any expired rate limits before picking
@@ -68,12 +68,11 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
         const totalAccounts = accountManager.getAccountCount();
         const lockedCount = totalAccounts - availableAccounts.length;
         const semStats = getSemaphoreStats();
-        logger.debug(`[Pool] model=${model} attempt=${attempt + 1} | available=${availableAccounts.length}/${totalAccounts} (locked=${lockedCount}) | semaphore: active=${semStats.active}/${semStats.max} queued=${semStats.queued} served=${semStats.totalServed} 429s=${semStats.total429s}`);
+        logger.debug(`[Pool] model=${model} attempt=${attempt + 1}/${maxAttempts} | available=${availableAccounts.length}/${totalAccounts} (locked=${lockedCount}) | semaphore: active=${semStats.active}/${semStats.max} queued=${semStats.queued} served=${semStats.totalServed} 429s=${semStats.total429s}`);
 
         // If no accounts available, check if we should wait or throw error
         if (availableAccounts.length === 0) {
             // All accounts invalid? Fail immediately — they need user intervention (WebUI FIX button)
-            // Invalid accounts won't self-recover, so waiting would be an infinite loop
             if (accountManager.isAllAccountsInvalid()) {
                 const invalidAccounts = accountManager.getInvalidAccounts();
                 const reasons = [...new Set(invalidAccounts.map(a => a.invalidReason).filter(Boolean))];
@@ -92,11 +91,6 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         return;
                     }
                 }
-                if (attempt === 0) {
-                    logger.info(`[CloudCode] Optimistically clearing stale rate limits for ${model}`);
-                    accountManager.resetAllRateLimits();
-                    continue;
-                }
                 const minWaitMs = accountManager.getMinWaitTimeMs(model);
                 if (minWaitMs > MAX_WAIT_BEFORE_ERROR_MS) {
                     throw new Error(`All accounts rate-limited for ${model}. Shortest wait: ${formatDuration(minWaitMs)}`);
@@ -104,16 +98,15 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 const sleepTime = Math.min(minWaitMs, 3000);
                 totalRateLimitWaitMs += sleepTime;
                 if (totalRateLimitWaitMs > 30000) {
-                    throw new Error(`All accounts rate-limited for ${model}. Please try again shortly or switch model.`);
+                    throw new Error(`All accounts rate-limited for ${model}. Please try again shortly.`);
                 }
                 logger.warn(`[CloudCode] All accounts rate-limited. Waiting ${sleepTime}ms before retry (${totalRateLimitWaitMs}ms total, shortest wait: ${formatDuration(minWaitMs)})...`);
                 await sleep(sleepTime);
                 accountManager.clearExpiredLimits();
-                attempt--; // CRITICAL: Do not burn retry attempts while waiting for rate-limit cooldown
                 continue;
             }
 
-            // No accounts available and not rate-limited (shouldn't happen normally)
+            // No accounts available and not rate-limited
             throw new Error('No accounts available');
         }
 
@@ -154,6 +147,8 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             continue;
         }
 
+        logger.info(`[CloudCode] 🎯 Attempt ${attempt + 1}/${maxAttempts} for ${model} -> selected account: ${account.email} (pinned: ${account === pinnedAccount})`);
+
         try {
             // ── PROFILING: token fetch ──────────────────────────────────────────
             const t0 = Date.now();
@@ -167,8 +162,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
             const payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
 
-            logger.info(`[PERF][CloudCode] account=${account.email} tokenFetch=${tokenMs}ms projectFetch=${projectMs}ms${tokenMs > 500 ? ' ⚠️ SLOW_TOKEN' : ''}${projectMs > 500 ? ' ⚠️ SLOW_PROJECT' : ''}`);
-            logger.debug(`[CloudCode] Starting stream for model: ${model}`);
+            logger.info(`[CloudCode] 🔑 Token & project resolved for ${account.email} (token: ${tokenMs}ms, project: ${projectMs}ms, project: ${project || 'default'})`);
 
             // Try each endpoint with index-based loop for capacity retry support
             let lastError = null;
@@ -179,17 +173,18 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 const endpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex];
                 try {
                     const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+                    logger.info(`[CloudCode] 🌐 Dispatching stream request -> ${endpoint} (account: ${account.email})`);
 
                     // ── PROFILING: HTTP TTFB ────────────────────────────────────
                     const tFetch = Date.now();
                     const response = await throttledFetch(url, {
                         method: 'POST',
-                        headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId),
+                        headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                         body: JSON.stringify(payload)
                     });
                     const ttfbMs = Date.now() - tFetch;
                     if (response.ok) {
-                        logger.info(`[PERF][CloudCode] TTFB=${ttfbMs}ms endpoint=${endpoint} account=${account.email}${ttfbMs > 3000 ? ' ⚠️ SLOW_TTFB' : ''}`);
+                        logger.info(`[PERF][CloudCode] ⚡ TTFB=${ttfbMs}ms endpoint=${endpoint} account=${account.email}${ttfbMs > 3000 ? ' ⚠️ SLOW_TTFB' : ''}`);
                     }
 
                     if (!response.ok) {
@@ -410,7 +405,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             // Refetch the response
                             currentResponse = await throttledFetch(url, {
                                 method: 'POST',
-                                headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId),
+                                headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                                 body: JSON.stringify(payload)
                             });
 
@@ -443,7 +438,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     await sleep(1000);
                                     currentResponse = await throttledFetch(url, {
                                         method: 'POST',
-                                        headers: buildHeaders(token, model, 'text/event-stream'),
+                                        headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                                         body: JSON.stringify(payload)
                                     });
                                     if (currentResponse.ok) {
@@ -495,12 +490,6 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 // Rate limited - already marked, notify strategy and continue to next account
                 accountManager.notifyRateLimit(account, model);
                 logger.info(`[CloudCode] Account ${account.email} rate-limited, trying next...`);
-
-                // CRITICAL FIX: Don't count rate-limit / quota account failover against maxAttempts,
-                // so the proxy can rotate across all healthy/available accounts or wait without throwing 500.
-                if (error.message?.includes('RATE_LIMITED') || error.message?.includes('QUOTA_EXHAUSTED')) {
-                    attempt--;
-                }
                 continue;
             }
             if (isAuthError(error)) {

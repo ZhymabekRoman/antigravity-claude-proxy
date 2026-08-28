@@ -71,14 +71,21 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
  * @param {string} model - Model name
  * @param {string} accept - Accept header value (default: 'application/json')
  * @param {string} [sessionId] - Optional session ID for X-Machine-Session-Id header
+ * @param {string} [accountEmail] - Account email for per-account pacer key
  * @returns {Object} Headers object
  */
-export function buildHeaders(token, model, accept = 'application/json', sessionId) {
+export function buildHeaders(token, model, accept = 'application/json', sessionId, accountEmail) {
     const headers = {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         ...ANTIGRAVITY_HEADERS
     };
+
+    // Inject account key for per-account outbound pacer (helpers.js throttledFetch)
+    // Stripped before the request reaches Google (not a real HTTP header for the API)
+    if (accountEmail) {
+        headers['x-account-key'] = accountEmail;
+    }
 
     // Add session ID header if provided (matches Antigravity binary behavior)
     if (sessionId) {

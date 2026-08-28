@@ -138,15 +138,50 @@ function _releaseSemaphore() {
     }
 }
 
-/**
- * Throttled fetch: globally rate-limited to MAX_CONCURRENT_REQUESTS
- * in-flight at any moment. Prevents thundering herd 429s when multiple
- * Claude Code sessions issue parallel requests.
- * @param {string|URL} url - The URL to fetch
- * @param {RequestInit} [options] - Fetch options
- * @returns {Promise<Response>} Fetch response
- */
+// Outbound Request Pacer (Per-Account Leaky Bucket):
+//
+// OLD design: a single global sequential Promise chain (800ms gap).
+//   Problem: in agent mode, 20 tool calls with 1 account = 16s of pure pacer wait.
+//   Worse: with 3 concurrent sessions, requests to DIFFERENT accounts were still
+//   serialized through one chain — defeating the entire account pool benefit.
+//
+// NEW design: per-account pacers at 200ms gap.
+//   - Requests to different accounts run truly in parallel.
+//   - Per-account burst protection is still enforced (no more than 5 RPM burst
+//     from a single account, matching Google's per-second quota window).
+//   - The account email is extracted from the Authorization header or passed
+//     via a custom x-account-key header by throttledFetch callers.
+const MIN_OUTBOUND_GAP_MS = config.outboundGapMs || 200; // 200ms per-account gap (was: 800ms global)
+const _accountPacers = new Map(); // accountKey -> { lastTime: number, queue: Promise }
+
+function _getPacerKey(options) {
+    // Extract account key from headers: x-account-key (injected by buildHeaders) or fallback
+    const headers = options?.headers || {};
+    return headers['x-account-key'] || headers['X-Account-Key'] || 'default';
+}
+
+function _paceOutboundRequest(pacerKey) {
+    if (!_accountPacers.has(pacerKey)) {
+        _accountPacers.set(pacerKey, { lastTime: 0, queue: Promise.resolve() });
+    }
+    const pacer = _accountPacers.get(pacerKey);
+    pacer.queue = pacer.queue.then(async () => {
+        const now = Date.now();
+        const elapsed = now - pacer.lastTime;
+        if (elapsed < MIN_OUTBOUND_GAP_MS) {
+            const waitMs = MIN_OUTBOUND_GAP_MS - elapsed;
+            logger.debug(`[Pacer] ⏱️ account=${pacerKey} waiting ${waitMs}ms (gap=${MIN_OUTBOUND_GAP_MS}ms)`);
+            await sleep(waitMs);
+        }
+        pacer.lastTime = Date.now();
+    });
+    return pacer.queue;
+}
+
 export async function throttledFetch(url, options) {
+    const urlStr = typeof url === 'string' ? url : url?.toString?.() || '';
+    const isCloudCodeAiEndpoint = urlStr.includes('cloudcode-pa.googleapis.com') && (urlStr.includes('streamGenerateContent') || urlStr.includes('generateContent'));
+
     const queuedAt = Date.now();
     const wasQueued = _activeRequests >= MAX_CONCURRENT_REQUESTS;
     await _acquireSemaphore();
@@ -155,7 +190,17 @@ export async function throttledFetch(url, options) {
         logger.info(`[Semaphore] ⏳ Request waited ${waitedMs}ms in queue | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS}`);
     }
     try {
-        return await fetch(url, options);
+        if (isCloudCodeAiEndpoint) {
+            const pacerKey = _getPacerKey(options);
+            await _paceOutboundRequest(pacerKey);
+        }
+        // Strip internal x-account-key before sending to upstream (not a real API header)
+        let fetchOptions = options;
+        if (options?.headers?.['x-account-key'] || options?.headers?.['X-Account-Key']) {
+            const { 'x-account-key': _ak, 'X-Account-Key': _AK, ...cleanHeaders } = options.headers;
+            fetchOptions = { ...options, headers: cleanHeaders };
+        }
+        return await fetch(url, fetchOptions);
     } finally {
         _releaseSemaphore();
     }
