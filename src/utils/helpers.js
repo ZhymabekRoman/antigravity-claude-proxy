@@ -1,8 +1,27 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { Agent, setGlobalDispatcher } from 'undici';
 import { config } from '../config.js';
 import { logger } from './logger.js';
+
+// High-performance connection pool with HTTP keep-alive for Google APIs
+// Eliminates 150-300ms TCP/TLS handshake overhead per tool call turn
+const globalDispatcher = new Agent({
+    keepAliveTimeout: 60000,      // 60 seconds keep-alive timeout
+    keepAliveMaxTimeout: 600000,  // 10 minutes max socket lifetime
+    pipelining: 1,
+    connections: 50,              // Pool size for multi-account concurrent requests
+    connect: {
+        timeout: 10000            // 10 second connect timeout
+    }
+});
+
+try {
+    setGlobalDispatcher(globalDispatcher);
+} catch (e) {
+    // Fallback if dispatcher already locked
+}
 
 /**
  * Shared Utility Functions

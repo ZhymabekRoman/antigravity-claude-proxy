@@ -23,6 +23,8 @@ window.Components.logsViewer = () => ({
     _batchTimer: null,
     _rafId: null,
 
+    visibleCount: 250,
+
     get filteredLogs() {
         const query = this.searchQuery.trim();
         if (!query) {
@@ -35,6 +37,20 @@ window.Components.logsViewer = () => ({
             if (!this.filters[log.level]) return false;
             return (log._search || log.message.toLowerCase()).includes(lowerQuery);
         });
+    },
+
+    get visibleLogs() {
+        const filtered = this.filteredLogs;
+        if (filtered.length <= this.visibleCount) return filtered;
+        return filtered.slice(-this.visibleCount);
+    },
+
+    get hiddenAboveCount() {
+        return Math.max(0, this.filteredLogs.length - this.visibleCount);
+    },
+
+    loadMore() {
+        this.visibleCount += 250;
     },
 
     init() {

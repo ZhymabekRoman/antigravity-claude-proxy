@@ -126,7 +126,7 @@ export const LOAD_CODE_ASSIST_HEADERS = ANTIGRAVITY_HEADERS;
 export const DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
 
 // Configurable constants - values from config.json take precedence
-export const TOKEN_REFRESH_INTERVAL_MS = config?.tokenCacheTtlMs || (5 * 60 * 1000); // From config or 5 minutes
+export const TOKEN_REFRESH_INTERVAL_MS = config?.tokenCacheTtlMs || (50 * 60 * 1000); // From config or 50 minutes (Google access tokens live 60m)
 export const REQUEST_BODY_LIMIT = config?.requestBodyLimit || '50mb';
 export const ANTIGRAVITY_AUTH_PORT = 9092;
 export const DEFAULT_PORT = config?.port || 8080;
@@ -148,7 +148,7 @@ export const USAGE_HISTORY_PATH = join(
 export const ANTIGRAVITY_DB_PATH = getAntigravityDbPath();
 
 export const DEFAULT_COOLDOWN_MS = config?.defaultCooldownMs || (10 * 1000); // From config or 10 seconds
-export const MAX_RETRIES = config?.maxRetries || 5; // From config or 5
+export const MAX_RETRIES = config?.maxRetries || 3; // Capped at 3 account attempts per request
 export const MAX_EMPTY_RESPONSE_RETRIES = 2; // Max retries for empty API responses (from upstream)
 export const MAX_ACCOUNTS = config?.maxAccounts || 10; // From config or 10
 
@@ -159,7 +159,7 @@ export const MAX_WAIT_BEFORE_ERROR_MS = config?.maxWaitBeforeErrorMs || 600000; 
 export const RATE_LIMIT_DEDUP_WINDOW_MS = config?.rateLimitDedupWindowMs || 2000; // 2 seconds
 export const RATE_LIMIT_STATE_RESET_MS = config?.rateLimitStateResetMs || 120000; // 2 minutes - reset consecutive429 after inactivity
 export const FIRST_RETRY_DELAY_MS = config?.firstRetryDelayMs || 1000; // Quick 1s retry on first 429
-export const SWITCH_ACCOUNT_DELAY_MS = config?.switchAccountDelayMs || 50; // Optimized: 50ms delay for fast rotation (was 5000ms)
+export const SWITCH_ACCOUNT_DELAY_MS = config?.switchAccountDelayMs || 1500; // 1.5s pause between account switches to prevent retry storms
 
 // Consecutive failure tracking - extended cooldown after repeated failures
 export const MAX_CONSECUTIVE_FAILURES = config?.maxConsecutiveFailures || 3;
