@@ -135,48 +135,10 @@ window.DashboardCharts.createDataset = function (label, data, color, canvas) {
  * @param {object} component - Dashboard component instance
  */
 window.DashboardCharts.updateCharts = function (component) {
+  if (Alpine.store("global")?.activeTab !== "dashboard") return;
+
   const canvas = document.getElementById("quotaChart");
-
-  // Safety checks
-  if (!canvas) {
-    console.debug("quotaChart canvas not found");
-    return;
-  }
-
-  // FORCE DESTROY: Check for existing chart on the canvas element property
-  // This handles cases where Component state is lost but DOM persists
-  if (canvas._chartInstance) {
-    console.debug("Destroying existing quota chart from canvas property");
-    try {
-        canvas._chartInstance.destroy();
-    } catch(e) { if (window.UILogger) window.UILogger.debug(e); }
-    canvas._chartInstance = null;
-  }
-  
-  // Also check component state as backup
-  if (component.charts.quotaDistribution) {
-     try {
-         component.charts.quotaDistribution.destroy();
-     } catch(e) { }
-     component.charts.quotaDistribution = null;
-  }
-  
-  // Also try Chart.js registry
-  if (typeof Chart !== "undefined" && Chart.getChart) {
-      const regChart = Chart.getChart(canvas);
-      if (regChart) {
-          try { regChart.destroy(); } catch(e) {}
-      }
-  }
-
-  if (typeof Chart === "undefined") {
-    if (window.UILogger) window.UILogger.warn("Chart.js not loaded");
-    return;
-  }
-  if (!isCanvasReady(canvas)) {
-    if (window.UILogger) window.UILogger.debug("quotaChart canvas not ready, skipping update");
-    return;
-  }
+  if (!canvas || !isCanvasReady(canvas)) return;
 
   // Use UNFILTERED data for global health chart
   const rows = Alpine.store("data").getUnfilteredQuotaData();
@@ -192,15 +154,11 @@ window.DashboardCharts.updateCharts = function (component) {
       healthByFamily[family] = { total: 0, weighted: 0 };
     }
 
-    // Calculate average health from quotaInfo (each entry has { pct })
-    // Health = average of all account quotas for this model
     const quotaInfo = row.quotaInfo || [];
     let avgHealth = 0;
-
     if (quotaInfo.length > 0) {
       avgHealth = quotaInfo.reduce((sum, q) => sum + (q.pct || 0), 0) / quotaInfo.length;
     }
-    // If quotaInfo is empty, avgHealth remains 0 (depleted/unknown)
 
     healthByFamily[family].total++;
     healthByFamily[family].weighted += avgHealth;
@@ -208,7 +166,6 @@ window.DashboardCharts.updateCharts = function (component) {
     totalModelCount++;
   });
 
-  // Update overall health for dashboard display
   component.stats.overallHealth = totalModelCount > 0
     ? Math.round(totalHealthSum / totalModelCount)
     : 0;
@@ -224,53 +181,46 @@ window.DashboardCharts.updateCharts = function (component) {
   const labels = [];
 
   const totalFamilies = Object.keys(healthByFamily).length;
-  const segmentSize = 100 / totalFamilies;
+  const segmentSize = 100 / (totalFamilies || 1);
 
   Object.entries(healthByFamily).forEach(([family, { total, weighted }]) => {
-    const health = weighted / total;
+    const health = total > 0 ? weighted / total : 0;
     const activeVal = (health / 100) * segmentSize;
     const inactiveVal = segmentSize - activeVal;
 
     const familyColor = familyColors[family] || familyColors["unknown"];
-
-    // Get translation keys
     const store = Alpine.store("global");
-    const familyKey =
-      "family" + family.charAt(0).toUpperCase() + family.slice(1);
-    const familyName = store.t(familyKey);
+    const familyKey = "family" + family.charAt(0).toUpperCase() + family.slice(1);
+    const familyName = store?.t(familyKey) || family;
 
-    // Labels using translations if possible
     const activeLabel =
-      family === "claude"
-        ? store.t("claudeActive")
-        : family === "gemini"
-        ? store.t("geminiActive")
-        : `${familyName} ${store.t("activeSuffix")}`;
+      family === "claude" ? store?.t("claudeActive") : family === "gemini" ? store?.t("geminiActive") : `${familyName} ${store?.t("activeSuffix") || ''}`;
 
     const depletedLabel =
-      family === "claude"
-        ? store.t("claudeEmpty")
-        : family === "gemini"
-        ? store.t("geminiEmpty")
-        : `${familyName} ${store.t("depleted")}`;
+      family === "claude" ? store?.t("claudeEmpty") : family === "gemini" ? store?.t("geminiEmpty") : `${familyName} ${store?.t("depleted") || ''}`;
 
-    // Active segment
     data.push(activeVal);
     colors.push(familyColor);
     labels.push(activeLabel);
 
-    // Inactive segment
     data.push(inactiveVal);
-    // Use higher opacity (0.6) to ensure the ring color matches the legend more closely
-    // while still differentiating "depleted" from "active" (1.0 opacity)
     colors.push(window.DashboardCharts.hexToRgba(familyColor, 0.6));
     labels.push(depletedLabel);
   });
 
-  // Create Chart
+  // Fast path: In-place update if chart already exists
+  const existing = canvas._chartInstance || component.charts?.quotaDistribution;
+  if (existing && !existing.destroyed && existing.canvas === canvas) {
+    existing.data.labels = labels;
+    existing.data.datasets[0].data = data;
+    existing.data.datasets[0].backgroundColor = colors;
+    existing.update('none');
+    return;
+  }
+
+  // Initial creation
   try {
     const newChart = new Chart(canvas, {
-       // ... config
        type: "doughnut",
        data: {
          labels: labels,
@@ -296,17 +246,12 @@ window.DashboardCharts.updateCharts = function (component) {
            tooltip: { enabled: false },
            title: { display: false },
          },
-         animation: {
-           // Disable animation for quota chart to prevent "double refresh" visual glitch
-           duration: 0
-         },
+         animation: false
        },
     });
     
-    // SAVE INSTANCE TO CANVAS AND COMPONENT
     canvas._chartInstance = newChart;
     component.charts.quotaDistribution = newChart;
-    
   } catch (e) {
     console.error("Failed to create quota chart:", e);
   }
@@ -317,95 +262,20 @@ window.DashboardCharts.updateCharts = function (component) {
  * @param {object} component - Dashboard component instance
  */
 window.DashboardCharts.updateTrendChart = function (component) {
-  // Prevent concurrent updates (fixes race condition on rapid toggling)
-  if (_trendChartUpdateLock) {
-    if (window.UILogger) window.UILogger.debug("[updateTrendChart] Update already in progress, skipping");
-    return;
-  }
+  if (Alpine.store("global")?.activeTab !== "dashboard") return;
+
+  if (_trendChartUpdateLock) return;
   _trendChartUpdateLock = true;
 
-  const logger = window.UILogger || console;
-  logger.debug("[updateTrendChart] Starting update...");
-
   const canvas = document.getElementById("usageTrendChart");
-  
-  // FORCE DESTROY: Check for existing chart on the canvas element property
-  if (canvas) {
-      if (canvas._chartInstance) {
-        console.debug("Destroying existing trend chart from canvas property");
-        try {
-            canvas._chartInstance.stop();
-            canvas._chartInstance.destroy();
-        } catch(e) { if (window.UILogger) window.UILogger.debug(e); }
-        canvas._chartInstance = null;
-      }
-      
-      // Also try Chart.js registry
-      if (typeof Chart !== "undefined" && Chart.getChart) {
-          const regChart = Chart.getChart(canvas);
-          if (regChart) {
-              try { regChart.stop(); regChart.destroy(); } catch(e) {}
-          }
-      }
-  }
-
-  // Also check component state
-  if (component.charts.usageTrend) {
-    try {
-      component.charts.usageTrend.stop();
-      component.charts.usageTrend.destroy();
-    } catch (e) { }
-    component.charts.usageTrend = null;
-  }
-
-  // Safety checks
-  if (!canvas) {
-    if (window.UILogger) window.UILogger.debug("[updateTrendChart] Canvas not found in DOM");
+  if (!canvas || !isCanvasReady(canvas)) {
     _trendChartUpdateLock = false;
     return;
   }
-  if (typeof Chart === "undefined") {
-    if (window.UILogger) window.UILogger.warn("[updateTrendChart] Chart.js not loaded");
-    _trendChartUpdateLock = false;
-    return;
-  }
-
-  if (window.UILogger) window.UILogger.debug("[updateTrendChart] Canvas element:", {
-    exists: !!canvas,
-    isConnected: canvas.isConnected,
-    width: canvas.offsetWidth,
-    height: canvas.offsetHeight,
-    parentElement: canvas.parentElement?.tagName,
-  });
-
-  if (!isCanvasReady(canvas)) {
-    if (window.UILogger) window.UILogger.debug("[updateTrendChart] Canvas not ready", {
-      isConnected: canvas.isConnected,
-      width: canvas.offsetWidth,
-      height: canvas.offsetHeight,
-    });
-    _trendChartUpdateLock = false;
-    return;
-  }
-
-  // Clear canvas to ensure clean state after destroy
-  try {
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  } catch (e) {
-    if (window.UILogger) window.UILogger.debug("[updateTrendChart] Failed to clear canvas:", e.message);
-  }
-
-  if (window.UILogger) window.UILogger.debug(
-    "[updateTrendChart] Canvas is ready, proceeding with chart creation"
-  );
 
   // Use filtered history data based on time range
   const history = window.DashboardFilters.getFilteredHistoryData(component);
   if (!history || Object.keys(history).length === 0) {
-    if (window.UILogger) window.UILogger.debug("No history data available for trend chart (after filtering)");
     component.hasFilteredTrendData = false;
     _trendChartUpdateLock = false;
     return;
@@ -418,24 +288,18 @@ window.DashboardCharts.updateTrendChart = function (component) {
     ([a], [b]) => new Date(a).getTime() - new Date(b).getTime()
   );
 
-  // Determine if data spans multiple days (for smart label formatting)
   const timestamps = sortedEntries.map(([iso]) => new Date(iso));
   const isMultiDay = timestamps.length > 1 &&
     timestamps[0].toDateString() !== timestamps[timestamps.length - 1].toDateString();
 
-  // Helper to format X-axis labels based on time range and multi-day status
   const formatLabel = (date) => {
     const timeRange = component.timeRange || '24h';
-
     if (timeRange === '7d') {
-      // Week view: show MM/DD
       return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' });
     } else if (isMultiDay || timeRange === 'all') {
-      // Multi-day data: show MM/DD HH:MM
       return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' }) + ' ' +
              date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } else {
-      // Same day: show HH:MM only
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
   };
@@ -444,7 +308,6 @@ window.DashboardCharts.updateTrendChart = function (component) {
   const datasets = [];
 
   if (component.displayMode === "family") {
-    // Aggregate by family
     const dataByFamily = {};
     component.selectedFamilies.forEach((family) => {
       dataByFamily[family] = [];
@@ -461,26 +324,16 @@ window.DashboardCharts.updateTrendChart = function (component) {
       });
     });
 
-    // Build datasets for families
     component.selectedFamilies.forEach((family) => {
       const color = window.DashboardFilters.getFamilyColor(family);
-      const familyKey =
-        "family" + family.charAt(0).toUpperCase() + family.slice(1);
-      const label = Alpine.store("global").t(familyKey);
+      const familyKey = "family" + family.charAt(0).toUpperCase() + family.slice(1);
+      const label = Alpine.store("global")?.t(familyKey) || family;
       datasets.push(
-        window.DashboardCharts.createDataset(
-          label,
-          dataByFamily[family],
-          color,
-          canvas
-        )
+        window.DashboardCharts.createDataset(label, dataByFamily[family], color, canvas)
       );
     });
   } else {
-    // Show individual models
     const dataByModel = {};
-
-    // Initialize data arrays
     component.families.forEach((family) => {
       (component.selectedModels[family] || []).forEach((model) => {
         const key = `${family}:${model}`;
@@ -501,21 +354,25 @@ window.DashboardCharts.updateTrendChart = function (component) {
       });
     });
 
-    // Build datasets for models
     component.families.forEach((family) => {
       (component.selectedModels[family] || []).forEach((model, modelIndex) => {
         const key = `${family}:${model}`;
         const color = window.DashboardFilters.getModelColor(family, modelIndex);
         datasets.push(
-          window.DashboardCharts.createDataset(
-            model,
-            dataByModel[key],
-            color,
-            canvas
-          )
+          window.DashboardCharts.createDataset(model, dataByModel[key], color, canvas)
         );
       });
     });
+  }
+
+  // Fast path: In-place update if chart already exists
+  const existing = canvas._chartInstance || component.charts?.usageTrend;
+  if (existing && !existing.destroyed && existing.canvas === canvas) {
+    existing.data.labels = labels;
+    existing.data.datasets = datasets;
+    existing.update('none');
+    _trendChartUpdateLock = false;
+    return;
   }
 
   try {
@@ -525,9 +382,7 @@ window.DashboardCharts.updateTrendChart = function (component) {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: {
-          duration: 300, // Reduced animation for faster updates
-        },
+        animation: { duration: 200 },
         interaction: {
           mode: "index",
           intersect: false,
@@ -535,8 +390,7 @@ window.DashboardCharts.updateTrendChart = function (component) {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor:
-              getThemeColor("--color-space-950") || "rgba(24, 24, 27, 0.9)",
+            backgroundColor: getThemeColor("--color-space-950") || "rgba(24, 24, 27, 0.9)",
             titleColor: getThemeColor("--color-text-main"),
             bodyColor: getThemeColor("--color-text-bright"),
             borderColor: getThemeColor("--color-space-border"),
@@ -564,9 +418,7 @@ window.DashboardCharts.updateTrendChart = function (component) {
             beginAtZero: true,
             grid: {
               display: true,
-              color:
-                getThemeColor("--color-space-border") + "1a" ||
-                "rgba(255,255,255,0.05)",
+              color: getThemeColor("--color-space-border") + "1a" || "rgba(255,255,255,0.05)",
             },
             ticks: {
               color: getThemeColor("--color-text-muted"),
@@ -577,14 +429,11 @@ window.DashboardCharts.updateTrendChart = function (component) {
       },
     });
     
-    // SAVE INSTANCE
     canvas._chartInstance = newChart;
     component.charts.usageTrend = newChart;
-
   } catch (e) {
     console.error("Failed to create trend chart:", e);
   } finally {
-    // Always release lock
     _trendChartUpdateLock = false;
   }
 };

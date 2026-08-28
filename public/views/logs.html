@@ -73,7 +73,7 @@
             <div class="flex gap-4 px-2 py-0.5 -mx-2 hover:bg-white/[0.03] transition-colors group">
                 <!-- Timestamp: Muted & Fixed Width -->
                 <span class="text-zinc-600 w-16 shrink-0 select-none group-hover:text-zinc-500 transition-colors"
-                    x-text="new Date(log.timestamp).toLocaleTimeString([], {hour12:false})"></span>
+                    x-text="log._time || new Date(log.timestamp).toLocaleTimeString([], {hour12:false})"></span>
 
                 <!-- Level: Tag Style -->
                 <div class="w-14 shrink-0 flex items-center">
@@ -89,7 +89,7 @@
 
                 <!-- Message: Clean & High Contrast -->
                 <span class="text-zinc-300 break-all group-hover:text-white transition-colors flex-1"
-                    x-html="Redact.logMessage(log.message).replace(/\n/g, '<br>')"></span>
+                    x-html="log._html || log.message"></span>
             </div>
         </template>
         <!-- Blinking Cursor -->

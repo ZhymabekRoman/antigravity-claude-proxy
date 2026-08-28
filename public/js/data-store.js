@@ -108,20 +108,32 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        _fetchPromise: null,
+
         async fetchData() {
+            if (this._fetchPromise) return this._fetchPromise;
+            this._fetchPromise = this._doFetchData();
+            try {
+                await this._fetchPromise;
+            } finally {
+                this._fetchPromise = null;
+            }
+        },
+
+        async _doFetchData() {
             // Only show skeleton on initial load if we didn't restore from cache
             if (this.initialLoad) {
                 this.loading = true;
             }
             try {
                 // Get password from global store
-                const password = Alpine.store('global').webuiPassword;
+                const password = Alpine.store('global')?.webuiPassword;
 
                 // Include history for dashboard (single API call optimization)
                 const url = '/account-limits?includeHistory=true';
                 const { response, newPassword } = await window.utils.request(url, {}, password);
 
-                if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+                if (newPassword && Alpine.store('global')) Alpine.store('global').webuiPassword = newPassword;
 
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -159,13 +171,12 @@ document.addEventListener('alpine:init', () => {
 
                 this.lastUpdated = new Date().toLocaleTimeString();
             } catch (error) {
-                // Keep error logging for actual fetch failures
                 console.error('Fetch error:', error);
                 const store = Alpine.store('global');
-                store.showToast(store.t('connectionLost'), 'error');
+                if (store) store.showToast(store.t('connectionLost'), 'error');
             } finally {
                 this.loading = false;
-                this.initialLoad = false; // Mark initial load as complete
+                this.initialLoad = false;
             }
         },
 

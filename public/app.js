@@ -15,38 +15,48 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('logsViewer', window.Components.logsViewer);
     Alpine.data('addAccountModal', window.Components.addAccountModal);
 
-    // View Loader Directive
+    // Lazy View Loader Directive (Only loads and initializes view when tab is first activated)
     Alpine.directive('load-view', (el, { expression }, { evaluate }) => {
         if (!window.viewCache) window.viewCache = new Map();
-
-        // Evaluate the expression to get the actual view name (removes quotes)
         const viewName = evaluate(expression);
 
-        if (window.viewCache.has(viewName)) {
-            el.innerHTML = window.viewCache.get(viewName);
-            Alpine.initTree(el);
-            return;
-        }
+        let loaded = false;
+        const load = () => {
+            if (loaded) return;
+            loaded = true;
 
-        fetch(`views/${viewName}.html?t=${Date.now()}`)
-            .then(response => {
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                return response.text();
-            })
-            .then(html => {
-                // Update cache (optional, or remove if we want always-fresh)
-                // keeping cache for session performance, but initial load will now bypass browser cache
-                window.viewCache.set(viewName, html);
-                el.innerHTML = html;
+            if (window.viewCache.has(viewName)) {
+                el.innerHTML = window.viewCache.get(viewName);
                 Alpine.initTree(el);
-            })
-            .catch(err => {
-                console.error('Failed to load view:', viewName, err);
-                el.innerHTML = `<div class="p-4 border border-red-500/50 bg-red-500/10 rounded-lg text-red-400 font-mono text-sm">
-                    Error loading view: ${viewName}<br>
-                    <span class="text-xs opacity-75">${err.message}</span>
-                </div>`;
-            });
+                return;
+            }
+
+            fetch(`views/${viewName}.html?t=${Date.now()}`)
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.text();
+                })
+                .then(html => {
+                    window.viewCache.set(viewName, html);
+                    el.innerHTML = html;
+                    Alpine.initTree(el);
+                })
+                .catch(err => {
+                    console.error('Failed to load view:', viewName, err);
+                    el.innerHTML = `<div class="p-4 border border-red-500/50 bg-red-500/10 rounded-lg text-red-400 font-mono text-sm">
+                        Error loading view: ${viewName}<br>
+                        <span class="text-xs opacity-75">${err.message}</span>
+                    </div>`;
+                });
+        };
+
+        // If current active tab matches this view, load immediately; otherwise load on first tab activation
+        Alpine.effect(() => {
+            const activeTab = Alpine.store('global')?.activeTab;
+            if (activeTab === viewName && !loaded) {
+                load();
+            }
+        });
     });
 
     // Main App Controller

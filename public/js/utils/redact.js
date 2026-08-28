@@ -1,31 +1,48 @@
 /**
  * Redact Mode Utility
  * Replaces sensitive account data with anonymous labels for screenshots.
+ * Optimized for high-throughput log streaming.
  */
+let _cachedRegexes = null;
+let _cachedAccountCount = 0;
+
+function getRedactPatterns() {
+    const accounts = Alpine.store('data')?.accounts || [];
+    if (_cachedRegexes && _cachedAccountCount === accounts.length) {
+        return _cachedRegexes;
+    }
+    _cachedAccountCount = accounts.length;
+    _cachedRegexes = accounts.map((acc, idx) => {
+        if (!acc.email) return null;
+        const escaped = acc.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const emailRegex = new RegExp(escaped, 'g');
+        const user = acc.email.split('@')[0];
+        const userRegex = user ? new RegExp(`\\b${user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g') : null;
+        return { label: `Account ${idx + 1}`, emailRegex, userRegex };
+    }).filter(Boolean);
+    return _cachedRegexes;
+}
+
 window.Redact = {
     email(email) {
-        if (!Alpine.store('settings').redactMode) return email;
-        if (!email) return email;
+        if (!Alpine.store('settings')?.redactMode || !email) return email;
         const accounts = Alpine.store('data')?.accounts || [];
-        // Match full email or username-only (split('@')[0]) form
         const idx = accounts.findIndex(a => a.email === email || (a.email && a.email.split('@')[0] === email));
         return idx >= 0 ? `Account ${idx + 1}` : 'Account';
     },
 
     logMessage(message) {
-        if (!Alpine.store('settings').redactMode) return message;
-        const accounts = Alpine.store('data')?.accounts || [];
+        if (!Alpine.store('settings')?.redactMode || !message) return message;
+        const patterns = getRedactPatterns();
         let result = message;
-        accounts.forEach((acc, idx) => {
-            if (!acc.email) return;
-            const escaped = acc.email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            result = result.replace(new RegExp(escaped, 'g'), `Account ${idx + 1}`);
-            const user = acc.email.split('@')[0];
-            if (user) {
-                const escapedUser = user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                result = result.replace(new RegExp(`\\b${escapedUser}\\b`, 'g'), `Account ${idx + 1}`);
+        for (let i = 0; i < patterns.length; i++) {
+            const p = patterns[i];
+            result = result.replace(p.emailRegex, p.label);
+            if (p.userRegex) {
+                result = result.replace(p.userRegex, p.label);
             }
-        });
+        }
         return result;
     }
 };
+

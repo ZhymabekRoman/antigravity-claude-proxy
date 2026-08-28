@@ -57,24 +57,19 @@ window.Components.dashboard = () => ({
         this.$watch('$store.data.accounts', () => {
             if (this.$store.global.activeTab === 'dashboard') {
                 this.updateStats();
-                // Debounce chart updates to prevent rapid flickering
-                if (this._debouncedUpdateCharts) {
-                    this._debouncedUpdateCharts();
-                } else {
-                    this._debouncedUpdateCharts = window.utils.debounce(() => this.updateCharts(), 100);
-                    this._debouncedUpdateCharts();
+                if (!this._chartRaf) {
+                    this._chartRaf = requestAnimationFrame(() => {
+                        this._chartRaf = null;
+                        this.updateCharts();
+                    });
                 }
             }
         });
 
-        // Watch for history updates from data-store (automatically loaded with account data)
+        // Watch for history updates from data-store
         this.$watch('$store.data.usageHistory', (newHistory) => {
             if (this.$store.global.activeTab === 'dashboard' && newHistory && Object.keys(newHistory).length > 0) {
-                // Optimization: Skip if data hasn't changed (prevents double render on load)
-                if (this.historyData && JSON.stringify(newHistory) === JSON.stringify(this.historyData)) {
-                    return;
-                }
-
+                if (this.historyData === newHistory) return;
                 this.historyData = newHistory;
                 this.processHistory(newHistory);
                 this.stats.hasTrendData = true;
@@ -82,18 +77,14 @@ window.Components.dashboard = () => ({
         });
 
         // Initial update if already on dashboard
-        // Note: Alpine.store('data') may already have data from cache if initialized before this component
         if (this.$store.global.activeTab === 'dashboard') {
             this.$nextTick(() => {
                 this.updateStats();
                 this.updateCharts();
 
-                // Optimization: Only process history if it hasn't been processed yet
-                // The usageHistory watcher above will handle updates if data changes
-                const history = Alpine.store('data').usageHistory;
+                const history = Alpine.store('data')?.usageHistory;
                 if (history && Object.keys(history).length > 0) {
-                    // Check if we already have this data to avoid redundant chart update
-                    if (!this.historyData || JSON.stringify(history) !== JSON.stringify(this.historyData)) {
+                    if (this.historyData !== history) {
                         this.historyData = history;
                         this.processHistory(history);
                         this.stats.hasTrendData = true;
