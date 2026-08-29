@@ -170,15 +170,17 @@ export function isModelCapacityExhausted(errorText) {
  * @param {string} errorText - Error message
  * @param {number|null} serverResetMs - Reset time from server
  * @param {number} consecutiveFailures - Number of consecutive failures
+ * @param {number|null} [knownQuotaFraction] - Account's known remaining quota fraction (0-1).
+ *   Passed to parseRateLimitReason to differentiate RPM rate limits from quota exhaustion.
  * @returns {number} Backoff time in milliseconds
  */
-export function calculateSmartBackoff(errorText, serverResetMs, consecutiveFailures = 0) {
+export function calculateSmartBackoff(errorText, serverResetMs, consecutiveFailures = 0, knownQuotaFraction = null) {
     // If server provides a reset time, use it (with minimum floor to prevent loops)
     if (serverResetMs && serverResetMs > 0) {
         return Math.max(serverResetMs, MIN_BACKOFF_MS);
     }
 
-    const reason = parseRateLimitReason(errorText);
+    const reason = parseRateLimitReason(errorText, undefined, knownQuotaFraction);
 
     switch (reason) {
         case 'QUOTA_EXHAUSTED':

@@ -192,9 +192,12 @@ export function parseResetTime(responseOrError, errorText = '') {
  *
  * @param {string} errorText - Error message/body text
  * @param {number} [status] - HTTP status code (optional, for status-based classification)
+ * @param {number|null} [knownQuotaFraction] - Account's known remaining quota fraction (0-1) from fetchAvailableModels.
+ *   Used to differentiate RPM rate limits from daily quota exhaustion when Google returns the
+ *   identical RESOURCE_EXHAUSTED error for both. If > 0.05 (5%), the 429 is treated as RPM.
  * @returns {'RATE_LIMIT_EXCEEDED' | 'QUOTA_EXHAUSTED' | 'MODEL_CAPACITY_EXHAUSTED' | 'SERVER_ERROR' | 'UNKNOWN'} Error reason
  */
-export function parseRateLimitReason(errorText, status) {
+export function parseRateLimitReason(errorText, status, knownQuotaFraction) {
     // Status code checks FIRST (matches opencode-antigravity-auth Rust parity)
     // 529 = Site Overloaded, 503 = Service Unavailable → Capacity issues
     if (status === 529 || status === 503) return 'MODEL_CAPACITY_EXHAUSTED';
@@ -210,6 +213,13 @@ export function parseRateLimitReason(errorText, status) {
         lower.includes('resource_exhausted') ||
         lower.includes('daily limit') ||
         lower.includes('quota exceeded')) {
+
+        // Cross-reference with known quota: Google's RESOURCE_EXHAUSTED is identical
+        // for RPM rate limits and daily quota exhaustion. If the account still has
+        // significant quota remaining (>5%), this is an RPM burst limit, not quota.
+        if (knownQuotaFraction !== undefined && knownQuotaFraction !== null && knownQuotaFraction > 0.05) {
+            return 'RATE_LIMIT_EXCEEDED';
+        }
         return 'QUOTA_EXHAUSTED';
     }
 

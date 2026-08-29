@@ -167,6 +167,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             // Try each endpoint with index-based loop for capacity retry support
             let lastError = null;
             let capacityRetryCount = 0;
+            let rpmRetryCount = 0;     // RPM burst retries — retries same account when quota is available
             let endpointIndex = 0;
 
             while (endpointIndex < ANTIGRAVITY_ENDPOINT_FALLBACKS.length) {
@@ -231,6 +232,28 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 logger.warn(`[CloudCode] Max capacity retries (${MAX_CAPACITY_RETRIES}) exceeded, switching account`);
                             }
 
+                            // ── RPM vs Quota detection via quota cross-reference ──────────
+                            // Google's RESOURCE_EXHAUSTED is identical for RPM rate limits and
+                            // daily quota exhaustion. The ONLY way to tell them apart is to check
+                            // the account's known remaining quota from fetchAvailableModels.
+                            const knownQuota = account.quota?.models?.[model]?.remainingFraction ?? null;
+
+                            // If account has significant quota (>5%), this 429 is an RPM burst limit.
+                            // Wait briefly and retry the SAME account instead of rotating away from
+                            // an account that has 85% daily quota left.
+                            const MAX_RPM_RETRIES = 3;
+                            if (knownQuota !== null && knownQuota > 0.05 && rpmRetryCount < MAX_RPM_RETRIES) {
+                                rpmRetryCount++;
+                                const rpmWaitMs = 3000 * rpmRetryCount; // 3s, 6s, 9s
+                                logger.info(`[CloudCode] ⚡ RPM rate limit on ${account.email} (quota: ${(knownQuota * 100).toFixed(0)}%), retry ${rpmRetryCount}/${MAX_RPM_RETRIES} after ${formatDuration(rpmWaitMs)}...`);
+                                await sleep(rpmWaitMs);
+                                endpointIndex = 0; // Reset to try both endpoints fresh
+                                continue;
+                            }
+                            if (rpmRetryCount >= MAX_RPM_RETRIES && knownQuota !== null && knownQuota > 0.05) {
+                                logger.warn(`[CloudCode] Max RPM retries (${MAX_RPM_RETRIES}) on ${account.email} (quota: ${(knownQuota * 100).toFixed(0)}%), switching account...`);
+                            }
+
                             // Get rate limit backoff with exponential backoff and state reset
                             const backoff = getRateLimitBackoff(account.email, model, resetMs);
 
@@ -251,14 +274,14 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     endpointIndex++;
                                     continue;
                                 }
-                                const smartBackoffMs = calculateSmartBackoff(errorText, resetMs, consecutiveFailures);
+                                const smartBackoffMs = calculateSmartBackoff(errorText, resetMs, consecutiveFailures, knownQuota);
                                 logger.info(`[CloudCode] Skipping retry due to recent rate limit on ${account.email} (attempt ${backoff.attempt}), switching account...`);
                                 accountManager.markRateLimited(account.email, smartBackoffMs, model);
                                 throw new Error(`RATE_LIMITED_DEDUP: ${errorText}`);
                             }
 
-                            // Calculate smart backoff based on error type
-                            const smartBackoffMs = calculateSmartBackoff(errorText, resetMs, consecutiveFailures);
+                            // Calculate smart backoff based on error type + known quota context
+                            const smartBackoffMs = calculateSmartBackoff(errorText, resetMs, consecutiveFailures, knownQuota);
 
                             // Decision: wait and retry OR try next endpoint OR switch account
                             // First 429 gets a quick 1s retry (FIRST_RETRY_DELAY_MS)
