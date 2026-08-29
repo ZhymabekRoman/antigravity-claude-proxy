@@ -100,11 +100,15 @@ export function isNetworkError(error) {
  * parallel sessions + subagents fire 20-50 simultaneous requests, every
  * account gets 429'd, and agents hang indefinitely.
  *
- * This semaphore caps in-flight Google API requests to MAX_CONCURRENT_REQUESTS
+ * This semaphore caps in-flight Google AI generation requests to MAX_CONCURRENT_REQUESTS
  * globally across all sessions. Excess requests queue instead of firing
  * immediately, so accounts never see burst 429s from the proxy itself.
+ *
+ * NOTE: Only AI generation calls (streamGenerateContent/generateContent) go through
+ * the semaphore. Management calls (OAuth, quota, loadCodeAssist) bypass it entirely
+ * to prevent semaphore starvation from WebUI polling and internal housekeeping.
  */
-const MAX_CONCURRENT_REQUESTS = config.maxConcurrentRequests || 7; // 1 per account
+const MAX_CONCURRENT_REQUESTS = config.maxConcurrentRequests || 12; // 1 per account
 let _activeRequests = 0;
 const _waitQueue = [];
 let _totalQueued = 0;
@@ -197,10 +201,31 @@ function _paceOutboundRequest(pacerKey) {
     return pacer.queue;
 }
 
+// Response timeout for AI generation requests (TTFB).
+// Prevents semaphore slot leaks when Google accepts the TCP connection but stalls
+// on headers for minutes with large payloads (1600+ messages, 77+ tools).
+const FETCH_TIMEOUT_MS = config.fetchTimeoutMs || 120_000; // 2 minutes
+
 export async function throttledFetch(url, options) {
     const urlStr = typeof url === 'string' ? url : url?.toString?.() || '';
     const isCloudCodeAiEndpoint = urlStr.includes('cloudcode-pa.googleapis.com') && (urlStr.includes('streamGenerateContent') || urlStr.includes('generateContent'));
 
+    // Strip internal x-account-key before sending to upstream (not a real API header)
+    let fetchOptions = options;
+    if (options?.headers?.['x-account-key'] || options?.headers?.['X-Account-Key']) {
+        const { 'x-account-key': _ak, 'X-Account-Key': _AK, ...cleanHeaders } = options.headers;
+        fetchOptions = { ...options, headers: cleanHeaders };
+    }
+
+    // Non-AI calls (OAuth, loadCodeAssist, fetchAvailableModels, quota checks) bypass
+    // the semaphore entirely. These management calls were competing with AI generation
+    // for the same 7 slots, causing agent requests to queue behind 24+ WebUI polling
+    // calls per minute and starving actual agent work.
+    if (!isCloudCodeAiEndpoint) {
+        return await fetch(url, fetchOptions);
+    }
+
+    // AI generation requests: apply semaphore + per-account pacer + response timeout
     const queuedAt = Date.now();
     const wasQueued = _activeRequests >= MAX_CONCURRENT_REQUESTS;
     await _acquireSemaphore();
@@ -209,17 +234,19 @@ export async function throttledFetch(url, options) {
         logger.info(`[Semaphore] ⏳ Request waited ${waitedMs}ms in queue | Active: ${_activeRequests}/${MAX_CONCURRENT_REQUESTS}`);
     }
     try {
-        if (isCloudCodeAiEndpoint) {
-            const pacerKey = _getPacerKey(options);
-            await _paceOutboundRequest(pacerKey);
+        const pacerKey = _getPacerKey(options);
+        await _paceOutboundRequest(pacerKey);
+
+        // Apply response timeout to prevent semaphore slot leaks on hung connections
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        try {
+            const signals = [controller.signal, options?.signal].filter(Boolean);
+            const mergedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+            return await fetch(url, { ...fetchOptions, signal: mergedSignal });
+        } finally {
+            clearTimeout(timeoutId);
         }
-        // Strip internal x-account-key before sending to upstream (not a real API header)
-        let fetchOptions = options;
-        if (options?.headers?.['x-account-key'] || options?.headers?.['X-Account-Key']) {
-            const { 'x-account-key': _ak, 'X-Account-Key': _AK, ...cleanHeaders } = options.headers;
-            fetchOptions = { ...options, headers: cleanHeaders };
-        }
-        return await fetch(url, fetchOptions);
     } finally {
         _releaseSemaphore();
     }
