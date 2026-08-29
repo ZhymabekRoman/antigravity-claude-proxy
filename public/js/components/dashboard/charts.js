@@ -365,11 +365,57 @@ window.DashboardCharts.updateTrendChart = function (component) {
     });
   }
 
+  const tooltipOptions = {
+    backgroundColor: getThemeColor("--color-space-950") || "rgba(10, 10, 11, 0.95)",
+    titleColor: getThemeColor("--color-text-main") || "#e8e8ea",
+    bodyColor: getThemeColor("--color-text-bright") || "#ffffff",
+    footerColor: getThemeColor("--color-neon-cyan") || "#38bdf8",
+    borderColor: getThemeColor("--color-space-border") || "rgba(42, 42, 46, 1)",
+    borderWidth: 1,
+    padding: 10,
+    boxPadding: 4,
+    cornerRadius: 6,
+    displayColors: true,
+    usePointStyle: true,
+    filter: function (tooltipItem, index, tooltipItems) {
+      // Only show datasets with actual requests (> 0). If all are 0, show the first item as "No requests"
+      const anyNonZero = tooltipItems.some((item) => (item.parsed?.y || 0) > 0);
+      if (anyNonZero) {
+        return (tooltipItem.parsed?.y || 0) > 0;
+      }
+      return index === 0;
+    },
+    itemSort: function (a, b) {
+      // Sort descending so the most used model/family is at the top
+      return (b.parsed?.y || 0) - (a.parsed?.y || 0);
+    },
+    callbacks: {
+      label: function (context) {
+        const val = context.parsed?.y || 0;
+        if (val === 0) {
+          return " " + (Alpine.store("global")?.t("noRequests") || "No requests");
+        }
+        return ` ${context.dataset.label}: ${val.toLocaleString()}`;
+      },
+      footer: function (tooltipItems) {
+        let total = 0;
+        tooltipItems.forEach((item) => {
+          total += item.parsed?.y || 0;
+        });
+        if (total > 0 && tooltipItems.length > 1) {
+          return `Total: ${total.toLocaleString()}`;
+        }
+        return "";
+      },
+    },
+  };
+
   // Fast path: In-place update if chart already exists
   const existing = canvas._chartInstance || component.charts?.usageTrend;
   if (existing && !existing.destroyed && existing.canvas === canvas) {
     existing.data.labels = labels;
     existing.data.datasets = datasets;
+    existing.options.plugins.tooltip = tooltipOptions;
     existing.update('none');
     _trendChartUpdateLock = false;
     return;
@@ -389,20 +435,7 @@ window.DashboardCharts.updateTrendChart = function (component) {
         },
         plugins: {
           legend: { display: false },
-          tooltip: {
-            backgroundColor: getThemeColor("--color-space-950") || "rgba(24, 24, 27, 0.9)",
-            titleColor: getThemeColor("--color-text-main"),
-            bodyColor: getThemeColor("--color-text-bright"),
-            borderColor: getThemeColor("--color-space-border"),
-            borderWidth: 1,
-            padding: 10,
-            displayColors: true,
-            callbacks: {
-              label: function (context) {
-                return context.dataset.label + ": " + context.parsed.y;
-              },
-            },
-          },
+          tooltip: tooltipOptions,
         },
         scales: {
           x: {
