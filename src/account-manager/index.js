@@ -500,6 +500,8 @@ export class AccountManager {
             accounts: this.#accounts.map(a => ({
                 email: a.email,
                 source: a.source,
+                mode: a.mode || null,
+                description: a.description || null,
                 enabled: a.enabled !== false,  // Default to true if undefined
                 projectId: a.projectId || null,
                 modelRateLimits: a.modelRateLimits || {},
@@ -512,6 +514,81 @@ export class AccountManager {
                 modelQuotaThresholds: a.modelQuotaThresholds || {}
             }))
         };
+    }
+
+    /**
+     * Get Gemini-BYOK account if configured as default for Gemini models
+     * @param {string} model - Requested model name
+     * @returns {Object|null} Gemini-BYOK account or null
+     */
+    getGeminiByokDefaultAccount(model) {
+        if (!model) return null;
+        const m = model.toLowerCase();
+        const isGemini = m.startsWith('gemini') || m.includes('flash') || m.includes('pro');
+        if (!isGemini) return null;
+
+        return this.#accounts.find(a => 
+            a.source === 'gemini-byok' && 
+            a.enabled !== false && 
+            a.mode === 'default_for_gemini_models' &&
+            a.apiKey
+        ) || null;
+    }
+
+    /**
+     * Get Gemini-BYOK fallback account on 429 exhaustion
+     * @returns {Object|null} Gemini-BYOK account or null
+     */
+    getGeminiByokFallbackAccount() {
+        return this.#accounts.find(a => 
+            a.source === 'gemini-byok' && 
+            a.enabled !== false && 
+            a.apiKey
+        ) || null;
+    }
+
+    /**
+     * Add or update a Gemini-BYOK account
+     * @param {Object} byokConfig - { apiKey, email, mode, description }
+     */
+    async addGeminiByokAccount({ apiKey, email, mode = 'default_for_gemini_models', description = '' }) {
+        const id = email || `gemini-byok-${Date.now().toString().slice(-4)}`;
+        const existingIdx = this.#accounts.findIndex(a => a.email === id || (a.source === 'gemini-byok' && a.apiKey === apiKey));
+        
+        const byokAccount = {
+            email: id,
+            source: 'gemini-byok',
+            apiKey,
+            mode: mode || 'default_for_gemini_models',
+            description: description || 'Google AI Studio Key',
+            enabled: true,
+            createdAt: Date.now()
+        };
+
+        if (existingIdx >= 0) {
+            this.#accounts[existingIdx] = { ...this.#accounts[existingIdx], ...byokAccount };
+        } else {
+            this.#accounts.push(byokAccount);
+        }
+
+        await this.saveToDisk();
+        logger.info(`[AccountManager] Added/Updated Gemini-BYOK account: ${id} (${mode})`);
+        return byokAccount;
+    }
+
+    /**
+     * Remove a Gemini-BYOK account
+     * @param {string} email - Account identifier
+     */
+    async removeGeminiByokAccount(email) {
+        const initialLen = this.#accounts.length;
+        this.#accounts = this.#accounts.filter(a => a.email !== email);
+        if (this.#accounts.length !== initialLen) {
+            await this.saveToDisk();
+            logger.info(`[AccountManager] Removed Gemini-BYOK account: ${email}`);
+            return true;
+        }
+        return false;
     }
 
     /**

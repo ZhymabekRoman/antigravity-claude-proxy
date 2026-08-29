@@ -40,6 +40,9 @@ export function getAvailableAccounts(accounts, modelId = null) {
     return accounts.filter(acc => {
         if (acc.isInvalid) return false;
 
+        // Skip gemini-byok accounts from standard Cloud Code OAuth pool
+        if (acc.source === 'gemini-byok') return false;
+
         // WebUI: Skip disabled accounts
         if (acc.enabled === false) return false;
 

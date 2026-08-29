@@ -38,6 +38,8 @@ import {
 import { sessionRouter, extractSessionKey } from './session-manager.js';
 import crypto from 'crypto';
 
+import { streamGeminiByok } from './gemini-byok-streamer.js';
+
 /**
  * Send a streaming request to Cloud Code with multi-account support
  * Streams events in real-time as they arrive from the server
@@ -54,6 +56,13 @@ import crypto from 'crypto';
 export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
     const model = anthropicRequest.model;
     let totalRateLimitWaitMs = 0;
+
+    // Check if model is a Gemini model and a gemini-byok default account is configured
+    const byokDefault = accountManager.getGeminiByokDefaultAccount?.(model);
+    if (byokDefault) {
+        yield* streamGeminiByok(anthropicRequest, byokDefault);
+        return;
+    }
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
@@ -72,6 +81,14 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         // If no accounts available, check if we should wait or throw error
         if (availableAccounts.length === 0) {
+            // Check for Gemini-BYOK fallback account
+            const byokFallback = accountManager.getGeminiByokFallbackAccount?.();
+            if (byokFallback) {
+                logger.info(`[CloudCode] 🔀 All Cloud Code accounts unavailable for ${model}, routing to Gemini-BYOK key`);
+                yield* streamGeminiByok(anthropicRequest, byokFallback);
+                return;
+            }
+
             // All accounts invalid? Fail immediately — they need user intervention (WebUI FIX button)
             if (accountManager.isAllAccountsInvalid()) {
                 const invalidAccounts = accountManager.getInvalidAccounts();

@@ -357,6 +357,33 @@ export function mountWebUI(app, dirname, accountManager) {
     });
 
     /**
+     * POST /api/accounts/gemini-byok - Add or update Gemini-BYOK API Key
+     */
+    app.post('/api/accounts/gemini-byok', async (req, res) => {
+        try {
+            const { apiKey, email, mode, description } = req.body;
+            if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 10) {
+                return res.status(400).json({ status: 'error', error: 'Valid Gemini API Key is required' });
+            }
+
+            const account = await accountManager.addGeminiByokAccount({
+                apiKey: apiKey.trim(),
+                email: email ? email.trim() : `gemini-byok-${Date.now().toString().slice(-4)}`,
+                mode: mode === 'fallback_on_429' ? 'fallback_on_429' : 'default_for_gemini_models',
+                description: description || 'Google AI Studio Key'
+            });
+
+            res.json({
+                status: 'ok',
+                account,
+                message: 'Gemini-BYOK key configured successfully'
+            });
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
      * PATCH /api/accounts/:email - Update account settings (thresholds)
      */
     app.patch('/api/accounts/:email', async (req, res) => {

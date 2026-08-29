@@ -68,6 +68,13 @@
                       :class="$store.data.accounts.length >= $store.data.maxAccounts ? 'text-yellow-400' : 'text-gray-400'"
                       x-text="$store.data.accounts.length + '/' + $store.data.maxAccounts"></span>
             </div>
+            <button class="btn btn-outline border-blue-500/40 text-blue-400 hover:bg-blue-500/10 hover:border-blue-400 btn-xs gap-1.5 h-8"
+                @click="document.getElementById('add_byok_modal').showModal()">
+                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                </svg>
+                <span>+ Add Gemini-BYOK</span>
+            </button>
             <button class="btn bg-neon-purple hover:bg-purple-600 border-none text-white btn-xs gap-2 shadow-lg shadow-neon-purple/20 h-8"
                 :class="{ 'opacity-50 cursor-not-allowed': $store.data.accounts.length >= $store.data.maxAccounts }"
                 :disabled="$store.data.accounts.length >= $store.data.maxAccounts"
@@ -147,56 +154,65 @@
                             </div>
                         </td>
                         <td class="py-4">
-                            <span :class="acc.source === 'oauth' ? 'status-pill-purple' : 'status-pill-free'"
-                                  x-text="acc.source || 'oauth'">
+                            <span :class="acc.source === 'gemini-byok' ? 'badge badge-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[10px]' : (acc.source === 'oauth' ? 'status-pill-purple' : 'status-pill-free')"
+                                  x-text="acc.source === 'gemini-byok' ? 'GEMINI-BYOK' : (acc.source || 'oauth')">
                             </span>
                         </td>
                         <td class="py-4">
                             <span :class="{
-                                      'status-pill-ultra': acc.subscription?.tier === 'ultra',
-                                      'status-pill-pro': acc.subscription?.tier === 'pro',
-                                      'status-pill-free': !acc.subscription || acc.subscription.tier === 'free' || acc.subscription.tier === 'unknown'
+                                      'badge badge-sm bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono text-[10px]': acc.source === 'gemini-byok',
+                                      'status-pill-ultra': acc.source !== 'gemini-byok' && acc.subscription?.tier === 'ultra',
+                                      'status-pill-pro': acc.source !== 'gemini-byok' && acc.subscription?.tier === 'pro',
+                                      'status-pill-free': acc.source !== 'gemini-byok' && (!acc.subscription || acc.subscription.tier === 'free' || acc.subscription.tier === 'unknown')
                                   }"
-                                  x-text="(acc.subscription?.tier || 'free').toUpperCase()">
+                                  x-text="acc.source === 'gemini-byok' ? 'AI STUDIO' : ((acc.subscription?.tier || 'free').toUpperCase())">
                             </span>
                         </td>
-                        <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
-                            <div x-data="{ quota: getMainModelQuota(acc) }">
-                                <template x-if="quota.percent !== null">
-                                    <div class="flex items-center gap-2">
-                                        <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
-                                            <div class="h-full rounded-full transition-all"
-                                                 :class="{
-                                                     'bg-neon-green': quota.percent > 50,
-                                                     'bg-yellow-500': quota.percent > 20 && quota.percent <= 50,
-                                                     'bg-red-500': quota.percent <= 20
-                                                 }"
-                                                 :style="`width: ${quota.percent}%`">
+                        <td class="py-4 cursor-pointer" @click="acc.source !== 'gemini-byok' && openQuotaModal(acc)">
+                            <template x-if="acc.source === 'gemini-byok'">
+                                <div>
+                                    <span class="text-[11px] font-mono text-blue-400" x-text="acc.mode === 'default_for_gemini_models' ? 'Default for gemini' : 'Fallback on 429'"></span>
+                                    <div class="text-[10px] font-mono text-gray-500">Direct API Key</div>
+                                </div>
+                            </template>
+                            <template x-if="acc.source !== 'gemini-byok'">
+                                <div x-data="{ quota: getMainModelQuota(acc) }">
+                                    <template x-if="quota.percent !== null">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
+                                                <div class="h-full rounded-full transition-all"
+                                                     :class="{
+                                                         'bg-neon-green': quota.percent > 50,
+                                                         'bg-yellow-500': quota.percent > 20 && quota.percent <= 50,
+                                                         'bg-red-500': quota.percent <= 20
+                                                     }"
+                                                     :style="`width: ${quota.percent}%`">
+                                                </div>
                                             </div>
+                                            <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
                                         </div>
-                                        <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
-                                    </div>
-                                </template>
-                                <template x-if="quota.percent === null">
-                                    <span class="text-xs text-gray-600">-</span>
-                                </template>
-                                <div x-show="acc.quotaThreshold !== undefined"
-                                     class="text-[10px] font-mono text-neon-yellow/60 mt-0.5"
-                                     x-text="'min: ' + getEffectiveThreshold(acc)"></div>
-                            </div>
+                                    </template>
+                                    <template x-if="quota.percent === null">
+                                        <span class="text-xs text-gray-600">-</span>
+                                    </template>
+                                    <div x-show="acc.quotaThreshold !== undefined"
+                                         class="text-[10px] font-mono text-neon-yellow/60 mt-0.5"
+                                         x-text="'min: ' + getEffectiveThreshold(acc)"></div>
+                                </div>
+                            </template>
                         </td>
                         <td class="py-4">
                             <div class="flex items-center gap-2">
                                 <div class="w-2 h-2 rounded-full flex-shrink-0"
-                                     :class="acc.status === 'ok' ?
+                                     :class="acc.source === 'gemini-byok' ? 'bg-blue-400' : (acc.status === 'ok' ?
                                              'bg-neon-green shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' :
                                              (acc.status === 'banned' ? 
                                               'bg-red-800 shadow-[0_0_8px_rgba(153,27,27,0.6)]' :
-                                              'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]')">
+                                              'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'))">
                                 </div>
                                 <span class="text-xs font-mono font-semibold"
-                                      :class="acc.status === 'ok' ? 'text-neon-green' : (acc.status === 'banned' ? 'text-red-800' : 'text-red-400')"
-                                      x-text="acc.status.toUpperCase()">
+                                      :class="acc.source === 'gemini-byok' ? 'text-blue-400' : (acc.status === 'ok' ? 'text-neon-green' : (acc.status === 'banned' ? 'text-red-800' : 'text-red-400'))"
+                                      x-text="acc.source === 'gemini-byok' ? 'READY' : (acc.status || 'OK').toUpperCase()">
                                 </span>
                                 <p x-show="acc.status === 'banned'" 
                                    class="text-[9px] text-red-600/70 mt-0.5 max-w-[200px] leading-tight"
@@ -643,6 +659,112 @@
                         :disabled="thresholdDialog.saving"
                         :class="{ 'loading': thresholdDialog.saving }">
                     <span>Save</span>
+                </button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop">
+            <button>close</button>
+        </form>
+    </dialog>
+
+    <!-- Add Gemini-BYOK Modal -->
+    <dialog id="add_byok_modal" class="modal backdrop-blur-sm" x-data="{
+        apiKey: '',
+        email: '',
+        mode: 'default_for_gemini_models',
+        description: 'Google AI Studio Key',
+        submitting: false,
+        async submit() {
+            if (!this.apiKey || this.apiKey.length < 10) {
+                Alpine.store('global').showToast('Please enter a valid Google AI Studio API Key', 'error');
+                return;
+            }
+            this.submitting = true;
+            try {
+                const store = Alpine.store('global');
+                const { response, newPassword } = await window.utils.request('/api/accounts/gemini-byok', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        apiKey: this.apiKey,
+                        email: this.email,
+                        mode: this.mode,
+                        description: this.description
+                    })
+                }, store.webuiPassword);
+                if (newPassword) store.webuiPassword = newPassword;
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    store.showToast('Gemini-BYOK key added successfully!', 'success');
+                    Alpine.store('data').fetchData();
+                    document.getElementById('add_byok_modal').close();
+                    this.apiKey = '';
+                    this.email = '';
+                } else {
+                    store.showToast(data.error || 'Failed to add Gemini-BYOK key', 'error');
+                }
+            } catch (e) {
+                store.showToast(e.message, 'error');
+            } finally {
+                this.submitting = false;
+            }
+        }
+    }">
+        <div class="modal-box max-w-lg w-full bg-space-900 border border-space-border text-gray-300 shadow-2xl p-6">
+            <h3 class="font-bold text-xl text-white mb-2 flex items-center gap-2">
+                <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                </svg>
+                <span>Add Gemini-BYOK API Key</span>
+            </h3>
+            <p class="text-xs text-gray-500 mb-4">
+                Connect your personal Google AI Studio API Key for direct Gemini model routing or 429 rate limit fallback.
+            </p>
+
+            <div class="space-y-4">
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-gray-400 text-xs">Google AI Studio API Key</span>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" class="label-text-alt text-xs text-blue-400 hover:underline">Get Key ↗</a>
+                    </label>
+                    <input type="password" x-model="apiKey" placeholder="AIzaSy..." class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono w-full">
+                </div>
+
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-gray-400 text-xs">Identifier / Label (Optional)</span>
+                    </label>
+                    <input type="text" x-model="email" placeholder="gemini-byok-primary" class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono w-full">
+                </div>
+
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-gray-400 text-xs font-semibold">Operation Mode</span>
+                    </label>
+                    <div class="space-y-2 bg-space-800/60 p-3 rounded-lg border border-space-border/50">
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="radio" name="byok_mode" value="default_for_gemini_models" x-model="mode" class="radio radio-sm radio-primary">
+                            <div>
+                                <div class="text-xs font-medium text-white">Default for gemini models</div>
+                                <div class="text-[10px] text-gray-500">Route all Gemini model requests directly via this key</div>
+                            </div>
+                        </label>
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="radio" name="byok_mode" value="fallback_on_429" x-model="mode" class="radio radio-sm radio-primary">
+                            <div>
+                                <div class="text-xs font-medium text-white">Fallback on 429</div>
+                                <div class="text-[10px] text-gray-500">Use Cloud Code pool first; fallback to this key on rate limit</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-action mt-6">
+                <button class="btn btn-sm btn-ghost text-gray-400" @click="document.getElementById('add_byok_modal').close()">Cancel</button>
+                <button class="btn btn-sm bg-blue-600 hover:bg-blue-500 text-white font-semibold" :disabled="submitting" @click="submit()">
+                    <span x-show="!submitting">Save Gemini-BYOK Key</span>
+                    <span x-show="submitting">Saving...</span>
                 </button>
             </div>
         </div>
