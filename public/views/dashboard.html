@@ -217,6 +217,128 @@
             </div>
         </div>
     </div>
+
+    <!-- System Telemetry & AutoExacto Benchmarks Grid -->
+    <div class="bg-space-900/40 border border-space-border/30 rounded-xl p-4 lg:p-5 relative overflow-hidden">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+            <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
+                <svg class="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <h3 class="text-xs font-mono font-bold text-white uppercase tracking-wider">System Telemetry & AutoExacto Benchmarks</h3>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="badge badge-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono text-[10px]">
+                    <span x-text="($store.data.telemetry?.totalTurns || 0) + ' TURNS RECORDED'"></span>
+                </span>
+                <span class="badge badge-xs font-mono text-[10px] font-bold"
+                      :class="{
+                          'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30': ($store.data.telemetry?.autoExacto?.score || 100) >= 97,
+                          'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30': ($store.data.telemetry?.autoExacto?.score || 100) >= 92 && ($store.data.telemetry?.autoExacto?.score || 100) < 97,
+                          'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30': ($store.data.telemetry?.autoExacto?.score || 100) < 92
+                      }"
+                      x-text="($store.data.telemetry?.autoExacto?.grade || 'S+') + ' • ' + ($store.data.telemetry?.autoExacto?.score || 100) + '% EXACTO'">
+                </span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+            <!-- 1. Throughput -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-cyan-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">Throughput</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono text-cyan-400" x-text="$store.data.telemetry?.throughput?.current || 0"></span>
+                    <span class="text-[10px] text-gray-500 font-mono">tok/s</span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>Peak</span>
+                    <span class="text-gray-300 font-bold" x-text="($store.data.telemetry?.throughput?.peak || 0) + ' t/s'"></span>
+                </div>
+            </div>
+
+            <!-- 2. Latency (TTFT) -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-emerald-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">Latency (TTFT)</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono text-emerald-400" x-text="$store.data.telemetry?.latency?.ttft?.avgMs ? Math.round($store.data.telemetry.latency.ttft.avgMs) : '-'"></span>
+                    <span class="text-[10px] text-gray-500 font-mono">ms</span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>P95</span>
+                    <span class="text-gray-300 font-bold" x-text="($store.data.telemetry?.latency?.ttft?.p95Ms ? Math.round($store.data.telemetry.latency.ttft.p95Ms) : 0) + 'ms'"></span>
+                </div>
+            </div>
+
+            <!-- 3. E2E Latency -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-purple-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">E2E Latency</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono text-purple-400" x-text="$store.data.telemetry?.e2eLatency?.formattedAvg || '-'"></span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>P95</span>
+                    <span class="text-gray-300 font-bold" x-text="($store.data.telemetry?.e2eLatency?.p95Ms >= 1000 ? ($store.data.telemetry.e2eLatency.p95Ms / 1000).toFixed(1) + 's' : ($store.data.telemetry?.e2eLatency?.p95Ms || 0) + 'ms')"></span>
+                </div>
+            </div>
+
+            <!-- 4. AutoExacto Benchmarks -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-yellow-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">AutoExacto Bench</div>
+                <div class="my-1.5 flex items-baseline gap-1.5">
+                    <span class="text-xl font-bold font-mono text-yellow-400" x-text="($store.data.telemetry?.autoExacto?.score || 100) + '%'"></span>
+                    <span class="badge badge-xs bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 text-[9px] font-bold" x-text="$store.data.telemetry?.autoExacto?.grade || 'S+'"></span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>Fidelity</span>
+                    <span class="text-gray-300 font-bold" x-text="($store.data.telemetry?.autoExacto?.schemaFidelityRate || 100) + '%'"></span>
+                </div>
+            </div>
+
+            <!-- 5. Tool Call Error Rate -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-rose-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">Tool Error Rate</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono"
+                          :class="($store.data.telemetry?.toolCallErrorRate?.errorRate || 0) > 5 ? 'text-red-400' : 'text-emerald-400'"
+                          x-text="($store.data.telemetry?.toolCallErrorRate?.errorRate || 0) + '%'">
+                    </span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>Total Calls</span>
+                    <span class="text-gray-300 font-bold" x-text="$store.data.telemetry?.toolCallErrorRate?.totalCalls || 0"></span>
+                </div>
+            </div>
+
+            <!-- 6. Structured Output Error Rate -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-blue-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">Struct Output Err</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono"
+                          :class="($store.data.telemetry?.structuredOutputErrorRate?.errorRate || 0) > 5 ? 'text-red-400' : 'text-emerald-400'"
+                          x-text="($store.data.telemetry?.structuredOutputErrorRate?.errorRate || 0) + '%'">
+                    </span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>Recoveries</span>
+                    <span class="text-gray-300 font-bold" x-text="$store.data.telemetry?.structuredOutputErrorRate?.formatErrors || 0"></span>
+                </div>
+            </div>
+
+            <!-- 7. Cache Hit Rate -->
+            <div class="bg-space-800/40 border border-space-border/30 hover:border-green-500/30 transition-colors rounded-lg p-3 flex flex-col justify-between">
+                <div class="text-[10px] font-mono text-gray-400 uppercase font-semibold">Cache Hit Rate</div>
+                <div class="my-1.5">
+                    <span class="text-xl font-bold font-mono text-neon-green" x-text="($store.data.telemetry?.cacheHitRate?.hitRate || 0) + '%'"></span>
+                </div>
+                <div class="text-[10px] font-mono text-gray-400 flex items-center justify-between border-t border-space-border/20 pt-1.5 mt-1">
+                    <span>TPU Saved</span>
+                    <span class="text-gray-300 font-bold" x-text="$store.data.telemetry?.cacheHitRate?.savedTokensFormatted || '0'"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Usage Trend Chart -->
     <div class="view-card">
         <!-- Header with Stats and Filter -->

@@ -14,6 +14,16 @@ document.addEventListener('alpine:init', () => {
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
         sessions: [], // Real-time active sessions & quota routing analytics
+        telemetry: {
+            throughput: { current: 0, peak: 0, lifetimeAvg: 0, unit: 'tok/s' },
+            latency: { ttft: { avgMs: 0, p50Ms: 0, p95Ms: 0, minMs: 0, maxMs: 0, unit: 'ms' } },
+            e2eLatency: { avgMs: 0, p50Ms: 0, p95Ms: 0, formattedAvg: '0ms' },
+            autoExacto: { score: 100, grade: 'S+', rating: 'OPTIMAL [EXACTO GOLD]', color: 'emerald', turnSuccessRate: 100, schemaFidelityRate: 100, totalBenchmarkTurns: 0 },
+            toolCallErrorRate: { errorRate: 0, successRate: 100, totalCalls: 0, failedCalls: 0 },
+            structuredOutputErrorRate: { errorRate: 0, successRate: 100, formatErrors: 0, totalTurns: 0 },
+            cacheHitRate: { hitRate: 0, cachedTokens: 0, totalPromptTokens: 0, savedTokensFormatted: '0' },
+            totalTurns: 0
+        },
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
         maxAccounts: 10, // Maximum number of accounts allowed (from config)
         devMode: false, // Developer mode flag (from server config)
@@ -83,6 +93,7 @@ document.addEventListener('alpine:init', () => {
                         this.modelConfig = data.modelConfig || {};
                         this.usageHistory = data.usageHistory || {};
                         this.sessions = data.sessions || [];
+                        if (data.telemetry) this.telemetry = data.telemetry;
 
                         // Don't show loading on initial load if we have cache
                         this.initialLoad = false;
@@ -103,6 +114,7 @@ document.addEventListener('alpine:init', () => {
                     modelConfig: this.modelConfig,
                     usageHistory: this.usageHistory,
                     sessions: this.sessions,
+                    telemetry: this.telemetry,
                     timestamp: Date.now()
                 };
                 localStorage.setItem('ag_data_cache', JSON.stringify(cacheData));
@@ -143,6 +155,9 @@ document.addEventListener('alpine:init', () => {
                 const data = await response.json();
                 this.accounts = data.accounts || [];
                 this.sessions = data.sessions || [];
+                if (data.telemetry) {
+                    this.telemetry = data.telemetry;
+                }
                 if (data.models && data.models.length > 0) {
                     this.models = data.models;
                 }

@@ -23,6 +23,7 @@ import { clearThinkingSignatureCache } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger, logContext } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
+import { telemetry } from './modules/telemetry.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency (defaults to true)
 const args = process.argv.slice(2);
@@ -622,12 +623,32 @@ app.get('/account-limits', async (req, res) => {
         // Include active session routing and quota analytics
         responseData.sessions = sessionRouter.getAllSessions(accountManager);
 
+        // Include real-time system telemetry & AutoExacto benchmarks
+        responseData.telemetry = telemetry.getMetrics();
+
         // Optionally include usage history (for dashboard performance optimization)
         if (includeHistory) {
             responseData.history = usageStats.getHistory();
         }
 
         res.json(responseData);
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * GET /api/benchmarks - Real-time system telemetry & AutoExacto benchmarks
+ */
+app.get('/api/benchmarks', (req, res) => {
+    try {
+        res.json({
+            status: 'ok',
+            telemetry: telemetry.getMetrics()
+        });
     } catch (error) {
         res.status(500).json({
             status: 'error',

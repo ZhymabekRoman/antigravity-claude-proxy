@@ -149,6 +149,12 @@ export const SESSIONS_PERSISTENCE_PATH = join(
     '.config/antigravity-proxy/sessions.json'
 );
 
+// Telemetry & AutoExacto benchmarks persistence path
+export const TELEMETRY_PERSISTENCE_PATH = join(
+    homedir(),
+    '.config/antigravity-proxy/telemetry.json'
+);
+
 // Antigravity app database path (for legacy single-account token extraction)
 // Uses platform-specific path detection
 export const ANTIGRAVITY_DB_PATH = getAntigravityDbPath();

@@ -37,6 +37,7 @@ import {
     calculateSmartBackoff
 } from './rate-limit-state.js';
 import { sessionRouter, extractSessionKey } from './session-manager.js';
+import { telemetry } from '../modules/telemetry.js';
 
 import { sendGeminiByokMessage } from './gemini-byok-streamer.js';
 
@@ -54,8 +55,22 @@ import { sendGeminiByokMessage } from './gemini-byok-streamer.js';
  * @throws {Error} If max retries exceeded or no accounts available
  */
 export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false) {
+    const tReqStart = Date.now();
     const model = anthropicRequest.model;
     const isThinking = isThinkingModel(model);
+
+    let reqToolCalls = 0;
+    let reqToolErrors = 0;
+    if (Array.isArray(anthropicRequest.messages)) {
+        for (const msg of anthropicRequest.messages) {
+            if (Array.isArray(msg.content)) {
+                for (const block of msg.content) {
+                    if (block.type === 'tool_use') reqToolCalls++;
+                    if (block.type === 'tool_result' && (block.is_error || block.isError)) reqToolErrors++;
+                }
+            }
+        }
+    }
 
     // Check if model is a Gemini model and a gemini-byok default account is configured
     const byokDefault = accountManager.getGeminiByokDefaultAccount?.(model);
@@ -354,6 +369,24 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                     // For thinking models, parse SSE and accumulate all parts
                     if (isThinking) {
                         const result = await parseThinkingSSEResponse(response, anthropicRequest.model);
+                        const e2eLatencyMs = Math.max(1, Date.now() - tReqStart);
+                        const outputTokens = result?.usage?.output_tokens || 0;
+                        const inputTokens = result?.usage?.input_tokens || 0;
+                        const cachedTokens = result?.usage?.cache_read_input_tokens || 0;
+
+                        telemetry.recordTurn({
+                            ttftMs: e2eLatencyMs,
+                            e2eLatencyMs,
+                            streamDurationMs: e2eLatencyMs,
+                            outputTokens,
+                            inputTokens,
+                            cachedTokens,
+                            toolCalls: reqToolCalls,
+                            toolErrors: reqToolErrors,
+                            formatErrors: 0,
+                            success: true
+                        });
+
                         // Clear rate limit state on success
                         clearRateLimitState(account.email, model);
                         accountManager.notifySuccess(account, model);
@@ -363,10 +396,29 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                     // Non-thinking models use regular JSON
                     const data = await response.json();
                     logger.debug('[CloudCode] Response received');
+                    const result = convertGoogleToAnthropic(data, anthropicRequest.model);
+                    const e2eLatencyMs = Math.max(1, Date.now() - tReqStart);
+                    const outputTokens = result?.usage?.output_tokens || 0;
+                    const inputTokens = result?.usage?.input_tokens || 0;
+                    const cachedTokens = result?.usage?.cache_read_input_tokens || 0;
+
+                    telemetry.recordTurn({
+                        ttftMs: e2eLatencyMs,
+                        e2eLatencyMs,
+                        streamDurationMs: e2eLatencyMs,
+                        outputTokens,
+                        inputTokens,
+                        cachedTokens,
+                        toolCalls: reqToolCalls,
+                        toolErrors: reqToolErrors,
+                        formatErrors: 0,
+                        success: true
+                    });
+
                     // Clear rate limit state on success
                     clearRateLimitState(account.email, model);
                     accountManager.notifySuccess(account, model);
-                    return convertGoogleToAnthropic(data, anthropicRequest.model);
+                    return result;
 
                 } catch (endpointError) {
                     if (isRateLimitError(endpointError)) {

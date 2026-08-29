@@ -36,6 +36,7 @@ import {
     calculateSmartBackoff
 } from './rate-limit-state.js';
 import { sessionRouter, extractSessionKey } from './session-manager.js';
+import { telemetry } from '../modules/telemetry.js';
 import crypto from 'crypto';
 
 import { streamGeminiByok } from './gemini-byok-streamer.js';
@@ -54,8 +55,22 @@ import { streamGeminiByok } from './gemini-byok-streamer.js';
  * @throws {Error} If max retries exceeded or no accounts available
  */
 export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
+    const tReqStart = Date.now();
     const model = anthropicRequest.model;
     let totalRateLimitWaitMs = 0;
+
+    let reqToolCalls = 0;
+    let reqToolErrors = 0;
+    if (Array.isArray(anthropicRequest.messages)) {
+        for (const msg of anthropicRequest.messages) {
+            if (Array.isArray(msg.content)) {
+                for (const block of msg.content) {
+                    if (block.type === 'tool_use') reqToolCalls++;
+                    if (block.type === 'tool_result' && (block.is_error || block.isError)) reqToolErrors++;
+                }
+            }
+        }
+    }
 
     // Check if model is a Gemini model and a gemini-byok default account is configured
     const byokDefault = accountManager.getGeminiByokDefaultAccount?.(model);
@@ -424,19 +439,25 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         try {
                             // ── PROFILING: stream duration ──────────────────────
                             const tStream = Date.now();
+                            let tFirstToken = null;
                             let outputTokens = 0;
+                            let inputTokens = 0;
+                            let cachedTokens = 0;
                             for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model)) {
+                                if (!tFirstToken && (event?.type === 'content_block_delta' || event?.type === 'content_block_start' || event?.type === 'message_delta')) {
+                                    tFirstToken = Date.now();
+                                }
                                 // Log Google TPU Prompt Cache metrics from message_delta (where Google emits final usage)
                                 if (event?.type === 'message_delta' && event?.usage) {
                                     const u = event.usage;
-                                    const cached = u.cache_read_input_tokens || 0;
-                                    const input = u.input_tokens || 0;
-                                    const total = cached + input;
-                                    if (cached > 0) {
-                                        const pct = ((cached / total) * 100).toFixed(1);
-                                        logger.info(`[CACHE][TPU-HIT] ⚡ ${cached}/${total} tokens (${pct}%) served from Google TPU prompt cache`);
-                                    } else if (input > 0) {
-                                        logger.info(`[CACHE][TPU-MISS] ❄️ ${input} input tokens ingested cold (first turn / cache expired)`);
+                                    cachedTokens = u.cache_read_input_tokens || 0;
+                                    inputTokens = u.input_tokens || 0;
+                                    const total = cachedTokens + inputTokens;
+                                    if (cachedTokens > 0) {
+                                        const pct = ((cachedTokens / total) * 100).toFixed(1);
+                                        logger.info(`[CACHE][TPU-HIT] ⚡ ${cachedTokens}/${total} tokens (${pct}%) served from Google TPU prompt cache`);
+                                    } else if (inputTokens > 0) {
+                                        logger.info(`[CACHE][TPU-MISS] ❄️ ${inputTokens} input tokens ingested cold (first turn / cache expired)`);
                                     }
                                     if (u.output_tokens) {
                                         outputTokens = u.output_tokens;
@@ -444,10 +465,28 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 }
                                 yield event;
                             }
-                            const streamMs = Date.now() - tStream;
+                            const tStreamEnd = Date.now();
+                            const streamMs = tStreamEnd - tStream;
+                            const ttftMs = tFirstToken ? Math.max(1, tFirstToken - tReqStart) : Math.max(1, tStream - tReqStart);
+                            const e2eLatencyMs = Math.max(1, tStreamEnd - tReqStart);
                             const tokPerSec = outputTokens > 0 ? (outputTokens / (streamMs / 1000)).toFixed(1) : 'N/A';
-                            logger.info(`[PERF][CloudCode] stream=${streamMs}ms outputTokens=${outputTokens} throughput=${tokPerSec} tok/s account=${account.email}${streamMs > 30000 ? ' ⚠️ SLOW_STREAM' : ''}`);
+                            logger.info(`[PERF][CloudCode] stream=${streamMs}ms outputTokens=${outputTokens} throughput=${tokPerSec} tok/s ttft=${ttftMs}ms e2e=${e2eLatencyMs}ms account=${account.email}${streamMs > 30000 ? ' ⚠️ SLOW_STREAM' : ''}`);
                             logger.debug('[CloudCode] Stream completed');
+
+                            // Record Telemetry and Benchmarks
+                            telemetry.recordTurn({
+                                ttftMs,
+                                e2eLatencyMs,
+                                streamDurationMs: streamMs,
+                                outputTokens,
+                                inputTokens,
+                                cachedTokens,
+                                toolCalls: reqToolCalls,
+                                toolErrors: reqToolErrors,
+                                formatErrors: emptyRetries,
+                                success: true
+                            });
+
                             // Clear rate limit state on success
                             clearRateLimitState(account.email, model);
                             accountManager.notifySuccess(account, model);
