@@ -217,12 +217,11 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         const errorText = await response.text();
                         const reqSummary = {
                             model,
-                            msgs: payload.generationConfig?.candidateCount || payload.contents?.length || '?',
-                            tools: payload.tools?.flatMap(t => t.functionDeclarations || []).map(f => f.name).length || 0,
+                            msgs: payload.request?.contents?.length || '?',
+                            tools: payload.request?.tools?.flatMap(t => t.functionDeclarations || []).map(f => f.name).length || 0,
                             sessionId: payload.request?.sessionId || 'none',
-                            contentRoles: payload.contents?.map(c => c.role).join(',') || 'empty',
-                            lastMsgPreview: JSON.stringify(payload.contents?.at(-1)?.parts?.[0])?.substring(0, 200) || 'none',
-                            headers: Object.fromEntries(Object.entries(buildHeaders(token, model, 'text/event-stream', payload.request?.sessionId, account.email)).filter(([k]) => !k.toLowerCase().includes('auth'))),
+                            contentRoles: payload.request?.contents?.map(c => c.role).join(',') || 'empty',
+                            lastMsgPreview: JSON.stringify(payload.request?.contents?.at(-1)?.parts?.[0])?.substring(0, 200) || 'none',
                         };
                         logger.warn(`[CloudCode] Stream error at ${endpoint}: ${response.status} - ${errorText}`);
                         logger.warn(`[CloudCode] ❗ Failed request details: ${JSON.stringify(reqSummary)}`);
