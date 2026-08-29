@@ -9,6 +9,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
+import { sessionRouter } from './cloudcode/session-manager.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
 
@@ -616,12 +617,33 @@ app.get('/account-limits', async (req, res) => {
             })
         };
 
+        // Include active session routing and quota analytics
+        responseData.sessions = sessionRouter.getAllSessions(accountManager);
+
         // Optionally include usage history (for dashboard performance optimization)
         if (includeHistory) {
             responseData.history = usageStats.getHistory();
         }
 
         res.json(responseData);
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * GET /api/sessions - Real-time session analytics
+ */
+app.get('/api/sessions', async (req, res) => {
+    try {
+        await ensureInitialized();
+        res.json({
+            status: 'ok',
+            sessions: sessionRouter.getAllSessions(accountManager)
+        });
     } catch (error) {
         res.status(500).json({
             status: 'error',

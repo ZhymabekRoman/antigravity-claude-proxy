@@ -13,6 +13,7 @@ document.addEventListener('alpine:init', () => {
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
+        sessions: [], // Real-time active sessions & quota routing analytics
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
         maxAccounts: 10, // Maximum number of accounts allowed (from config)
         devMode: false, // Developer mode flag (from server config)
@@ -81,6 +82,7 @@ document.addEventListener('alpine:init', () => {
                         this.models = data.models;
                         this.modelConfig = data.modelConfig || {};
                         this.usageHistory = data.usageHistory || {};
+                        this.sessions = data.sessions || [];
 
                         // Don't show loading on initial load if we have cache
                         this.initialLoad = false;
@@ -100,6 +102,7 @@ document.addEventListener('alpine:init', () => {
                     models: this.models,
                     modelConfig: this.modelConfig,
                     usageHistory: this.usageHistory,
+                    sessions: this.sessions,
                     timestamp: Date.now()
                 };
                 localStorage.setItem('ag_data_cache', JSON.stringify(cacheData));
@@ -139,6 +142,7 @@ document.addEventListener('alpine:init', () => {
 
                 const data = await response.json();
                 this.accounts = data.accounts || [];
+                this.sessions = data.sessions || [];
                 if (data.models && data.models.length > 0) {
                     this.models = data.models;
                 }

@@ -201,6 +201,12 @@ window.Components.dashboard = () => ({
         window.DashboardFilters.toggleModel(this, family, model);
     },
 
+    formatEmail(email) {
+        if (!email) return '';
+        if (window.Redact?.email) email = window.Redact.email(email);
+        return email.length > 30 ? email.slice(0, 27) + '...' : email;
+    },
+
     isFamilySelected(family) {
         return window.DashboardFilters.isFamilySelected(this, family);
     },

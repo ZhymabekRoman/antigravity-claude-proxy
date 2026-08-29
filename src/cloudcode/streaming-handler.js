@@ -140,7 +140,10 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             account = selected.account;
             waitMs = selected.waitMs;
             if (account) {
-                sessionRouter.bindSession(sessionKey, account.email, model);
+                const isSubagent = JSON.stringify(anthropicRequest.system || '').includes('cc_is_subagent=true') ||
+                                   JSON.stringify(anthropicRequest.system || '').includes('Agent SDK') ||
+                                   JSON.stringify(anthropicRequest.system || '').includes('subagent');
+                sessionRouter.bindSession(sessionKey, account.email, model, { isSubagent });
             }
         }
 

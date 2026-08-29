@@ -72,6 +72,8 @@ window.translations.en = {
     tabServer: "Server Settings",
     // Dashboard
     linkedAccounts: "Linked Accounts",
+    activeSessions: "Active Sessions & Quota Routing",
+    noActiveSessions: "No active sessions. Send prompts through Claude Code to see live routing.",
     noSignal: "NO SIGNAL DETECTED",
     establishingUplink: "ESTABLISHING UPLINK...",
     goToAccounts: "Go to Accounts",

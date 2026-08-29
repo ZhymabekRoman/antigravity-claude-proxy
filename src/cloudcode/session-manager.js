@@ -62,13 +62,14 @@ export function extractSessionKey(anthropicRequest) {
 
 /**
  * Session Router
- * Maintains per-session affinity to accounts to maximize prompt caching hit rate.
+ * Maintains per-session affinity to accounts to maximize prompt caching hit rate
+ * and tracks real-time session analytics.
  */
 export class SessionRouter {
-    #sessions = new Map(); // sessionKey -> { accountEmail, assignedAt, lastUsed, modelId }
+    #sessions = new Map(); // sessionKey -> { accountEmail, assignedAt, lastUsed, modelId, requestCount, isSubagent, tokens }
     #ttlMs;
 
-    constructor(ttlMs = 30 * 60 * 1000) { // 30 minutes TTL
+    constructor(ttlMs = 45 * 60 * 1000) { // 45 minutes TTL
         this.#ttlMs = ttlMs;
     }
 
@@ -90,7 +91,9 @@ export class SessionRouter {
             const account = availableAccounts.find(a => a.email === entry.accountEmail);
             if (account) {
                 entry.lastUsed = Date.now();
-                logger.info(`[CACHE][ROUTING-HIT] 🎯 Session: ${sessionKey} -> Pinned to ${account.email} (prompt cache affinity preserved)`);
+                entry.requestCount = (entry.requestCount || 0) + 1;
+                if (modelId) entry.modelId = modelId;
+                logger.info(`[CACHE][ROUTING-HIT] 🎯 Session: ${sessionKey} -> Pinned to ${account.email} (prompt cache affinity preserved, reqs: ${entry.requestCount})`);
                 return account;
             }
 
@@ -110,16 +113,87 @@ export class SessionRouter {
      * @param {string} sessionKey - Fingerprint for the session
      * @param {string} accountEmail - Email of selected account
      * @param {string} modelId - Model ID
+     * @param {Object} extra - Extra session metadata
      */
-    bindSession(sessionKey, accountEmail, modelId) {
+    bindSession(sessionKey, accountEmail, modelId, extra = {}) {
         if (!sessionKey || sessionKey === 'anon' || !accountEmail) return;
 
-        this.#sessions.set(sessionKey, {
-            accountEmail,
-            assignedAt: Date.now(),
-            lastUsed: Date.now(),
-            modelId
-        });
+        const existing = this.#sessions.get(sessionKey);
+        if (existing) {
+            existing.accountEmail = accountEmail;
+            existing.lastUsed = Date.now();
+            existing.modelId = modelId || existing.modelId;
+            existing.requestCount = (existing.requestCount || 0) + 1;
+            if (extra.isSubagent !== undefined) existing.isSubagent = extra.isSubagent;
+        } else {
+            this.#sessions.set(sessionKey, {
+                accountEmail,
+                assignedAt: Date.now(),
+                lastUsed: Date.now(),
+                modelId,
+                requestCount: 1,
+                isSubagent: !!extra.isSubagent
+            });
+        }
+    }
+
+    /**
+     * Record usage statistics for a session
+     */
+    recordSessionUsage(sessionKey, tokens = {}) {
+        if (!sessionKey || sessionKey === 'anon') return;
+        const entry = this.#sessions.get(sessionKey);
+        if (entry) {
+            entry.tokens = entry.tokens || { input: 0, output: 0 };
+            entry.tokens.input += (tokens.input_tokens || tokens.inputTokens || 0);
+            entry.tokens.output += (tokens.output_tokens || tokens.outputTokens || 0);
+        }
+    }
+
+    /**
+     * Get all active sessions enriched with quota data from AccountManager
+     *
+     * @param {Object} accountManager - AccountManager instance
+     * @returns {Array<Object>} List of session objects
+     */
+    getAllSessions(accountManager) {
+        this.#pruneStale();
+        const sessionsList = [];
+        const accounts = accountManager?.getAllAccounts?.() || [];
+        const now = Date.now();
+
+        for (const [key, entry] of this.#sessions.entries()) {
+            const acc = accounts.find(a => a.email === entry.accountEmail);
+            const modelQuota = acc?.models?.[entry.modelId];
+            const remainingFraction = modelQuota?.remainingFraction ?? null;
+            const remainingPercent = remainingFraction !== null ? Math.round(remainingFraction * 100) : null;
+            
+            // Check if account is currently rate limited for this model
+            const isRateLimited = acc?.modelRateLimits?.[entry.modelId] && acc.modelRateLimits[entry.modelId] > now;
+            const rateLimitExpiry = isRateLimited ? acc.modelRateLimits[entry.modelId] : null;
+
+            sessionsList.push({
+                sessionKey: key,
+                accountEmail: entry.accountEmail,
+                modelId: entry.modelId,
+                requestCount: entry.requestCount || 1,
+                assignedAt: entry.assignedAt,
+                lastUsed: entry.lastUsed,
+                idleSeconds: Math.round((now - entry.lastUsed) / 1000),
+                isSubagent: !!entry.isSubagent,
+                accountTier: acc?.subscription?.tier || (acc?.source === 'gemini-byok' ? 'byok' : 'free'),
+                accountSource: acc?.source || 'oauth',
+                accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || 'ok'),
+                remainingFraction,
+                remainingPercent,
+                resetTime: modelQuota?.resetTime || null,
+                rateLimitExpiry,
+                tokens: entry.tokens || null
+            });
+        }
+
+        // Sort by lastUsed descending (most active/recent sessions first)
+        return sessionsList.sort((a, b) => b.lastUsed - a.lastUsed);
     }
 
     /**
