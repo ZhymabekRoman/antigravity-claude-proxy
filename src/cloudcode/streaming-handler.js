@@ -261,24 +261,10 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             // Google's RESOURCE_EXHAUSTED is identical for RPM rate limits and
                             // daily quota exhaustion. The ONLY way to tell them apart is to check
                             // the account's known remaining quota from fetchAvailableModels.
+                            // This fraction is passed to calculateSmartBackoff→parseRateLimitReason
+                            // so RPM gets classified as RATE_LIMIT_EXCEEDED (short lockout, switch
+                            // account) instead of QUOTA_EXHAUSTED (long lockout).
                             const knownQuota = account.quota?.models?.[model]?.remainingFraction ?? null;
-
-                            // If account has significant quota (>5%), this 429 is an RPM burst limit.
-                            // Wait patiently and retry the SAME account instead of rotating away from
-                            // an account that has 85% daily quota left.
-                            // Google's RPM window is ~60s, so we use 15/30/45/60/75s progressive waits.
-                            const MAX_RPM_RETRIES = 5;
-                            if (knownQuota !== null && knownQuota > 0.05 && rpmRetryCount < MAX_RPM_RETRIES) {
-                                rpmRetryCount++;
-                                const rpmWaitMs = 15000 * rpmRetryCount; // 15s, 30s, 45s, 60s, 75s
-                                logger.info(`[CloudCode] ⚡ RPM rate limit on ${account.email} (quota: ${(knownQuota * 100).toFixed(0)}%), retry ${rpmRetryCount}/${MAX_RPM_RETRIES} after ${formatDuration(rpmWaitMs)}...`);
-                                await sleep(rpmWaitMs);
-                                endpointIndex = 0; // Reset to try both endpoints fresh
-                                continue;
-                            }
-                            if (rpmRetryCount >= MAX_RPM_RETRIES && knownQuota !== null && knownQuota > 0.05) {
-                                logger.warn(`[CloudCode] Max RPM retries (${MAX_RPM_RETRIES}) on ${account.email} (quota: ${(knownQuota * 100).toFixed(0)}%), switching account...`);
-                            }
 
                             // Get rate limit backoff with exponential backoff and state reset
                             const backoff = getRateLimitBackoff(account.email, model, resetMs);
