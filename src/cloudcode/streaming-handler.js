@@ -466,7 +466,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 yield event;
                             }
                             const tStreamEnd = Date.now();
-                            const streamMs = tStreamEnd - tStream;
+                            const streamMs = Math.max(10, tStreamEnd - (tFirstToken || tStream));
                             const ttftMs = tFirstToken ? Math.max(1, tFirstToken - tReqStart) : Math.max(1, tStream - tReqStart);
                             const e2eLatencyMs = Math.max(1, tStreamEnd - tReqStart);
                             const tokPerSec = outputTokens > 0 ? (outputTokens / (streamMs / 1000)).toFixed(1) : 'N/A';

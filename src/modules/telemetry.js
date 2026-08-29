@@ -148,10 +148,10 @@ class TelemetryCollector {
         // Throughput
         if (outputTokens > 0) {
             this.#totalOutputTokens += outputTokens;
-            if (streamDurationMs > 100) {
+            if (streamDurationMs >= 10) {
                 this.#totalStreamingMs += streamDurationMs;
                 const tokPerSec = Number((outputTokens / (streamDurationMs / 1000)).toFixed(1));
-                if (tokPerSec > 0 && tokPerSec < 1000) {
+                if (tokPerSec > 0 && tokPerSec < 2000) {
                     this.#throughputSamples.push(tokPerSec);
                     if (this.#throughputSamples.length > ROLLING_WINDOW_SIZE) this.#throughputSamples.shift();
                     if (tokPerSec > this.#peakThroughput) this.#peakThroughput = tokPerSec;
