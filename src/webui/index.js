@@ -400,13 +400,16 @@ export function mountWebUI(app, dirname, accountManager) {
 
             // Update per-account Gemini-BYOK API Key if provided
             if (byokApiKey !== undefined) {
-                if (!byokApiKey || byokApiKey.trim() === '') {
+                if (byokApiKey === null || (typeof byokApiKey === 'string' && byokApiKey.trim() === '')) {
                     delete account.byokApiKey;
                     delete account.byokMode;
-                } else if (typeof byokApiKey === 'string') {
+                } else if (typeof byokApiKey === 'string' && byokApiKey.trim() !== '') {
                     account.byokApiKey = byokApiKey.trim();
                     account.byokMode = byokMode === 'default_for_gemini_models' ? 'default_for_gemini_models' : 'fallback_on_429';
                 }
+            } else if (byokMode !== undefined && account.byokApiKey) {
+                // If only byokMode is updated without changing the key
+                account.byokMode = byokMode === 'default_for_gemini_models' ? 'default_for_gemini_models' : 'fallback_on_429';
             }
 
             // Validate and update quotaThreshold (0-0.99 or null/undefined to clear)

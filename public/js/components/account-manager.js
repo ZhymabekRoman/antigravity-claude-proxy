@@ -215,8 +215,10 @@ window.Components.accountManager = () => ({
     openThresholdModal(account) {
         this.thresholdDialog = {
             email: account.email,
-            byokApiKey: account.byokApiKey || '',
+            hasByokKey: !!account.hasByokKey,
+            byokApiKey: '', // Empty initially so user doesn't have to re-enter
             byokMode: account.byokMode || 'fallback_on_429',
+            removeByokKey: false,
             // Convert from fraction (0-1) to percentage (0-99) for display
             quotaThreshold: account.quotaThreshold !== undefined ? Math.round(account.quotaThreshold * 100) : null,
             modelQuotaThresholds: Object.fromEntries(
@@ -246,17 +248,25 @@ window.Components.accountManager = () => ({
                 modelQuotaThresholds[modelId] = parseFloat(pct) / 100;
             }
 
+            const payload = {
+                quotaThreshold,
+                modelQuotaThresholds,
+                byokMode: this.thresholdDialog.byokMode
+            };
+
+            // Only pass byokApiKey if explicitly changed or removed
+            if (this.thresholdDialog.byokApiKey && this.thresholdDialog.byokApiKey.trim() !== '') {
+                payload.byokApiKey = this.thresholdDialog.byokApiKey.trim();
+            } else if (this.thresholdDialog.removeByokKey) {
+                payload.byokApiKey = null;
+            }
+
             const { response, newPassword } = await window.utils.request(
                 `/api/accounts/${encodeURIComponent(this.thresholdDialog.email)}`,
                 {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        quotaThreshold,
-                        modelQuotaThresholds,
-                        byokApiKey: this.thresholdDialog.byokApiKey ? this.thresholdDialog.byokApiKey.trim() : null,
-                        byokMode: this.thresholdDialog.byokMode
-                    })
+                    body: JSON.stringify(payload)
                 },
                 store.webuiPassword
             );
