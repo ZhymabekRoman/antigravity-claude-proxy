@@ -171,7 +171,7 @@ export const MAX_CAPACITY_RETRIES = config?.maxCapacityRetries || 5;
 
 // Smart backoff by error type
 export const BACKOFF_BY_ERROR_TYPE = {
-    RATE_LIMIT_EXCEEDED: 15000,      // 15s - must be > DEFAULT_COOLDOWN_MS (10s) to trigger account switch
+    RATE_LIMIT_EXCEEDED: 40000,      // 40s - gives account RPM time to recover before re-trying
     MODEL_CAPACITY_EXHAUSTED: 15000, // 15 seconds
     SERVER_ERROR: 20000,             // 20 seconds
     UNKNOWN: 60000                   // 1 minute
