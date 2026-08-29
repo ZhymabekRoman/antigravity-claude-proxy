@@ -584,6 +584,8 @@ app.get('/account-limits', async (req, res) => {
                     source: metadata.source || 'unknown',
                     mode: metadata.mode || null,
                     hasByokKey: metadata.hasByokKey || false,
+                    byokApiKey: metadata.byokApiKey || null,
+                    apiKey: metadata.apiKey || null,
                     byokMode: metadata.byokMode || null,
                     enabled: metadata.enabled !== false,
                     projectId: metadata.projectId || null,

@@ -213,10 +213,13 @@ window.Components.accountManager = () => ({
     },
 
     openThresholdModal(account) {
+        const rawKey = account.byokApiKey || '';
         this.thresholdDialog = {
             email: account.email,
-            hasByokKey: !!account.hasByokKey,
-            byokApiKey: '', // Empty initially so user doesn't have to re-enter
+            hasByokKey: !!(rawKey || account.hasByokKey),
+            byokApiKey: rawKey,
+            originalKey: rawKey,
+            showKey: true,
             byokMode: account.byokMode || 'fallback_on_429',
             removeByokKey: false,
             // Convert from fraction (0-1) to percentage (0-99) for display
@@ -254,11 +257,11 @@ window.Components.accountManager = () => ({
                 byokMode: this.thresholdDialog.byokMode
             };
 
-            // Only pass byokApiKey if explicitly changed or removed
-            if (this.thresholdDialog.byokApiKey && this.thresholdDialog.byokApiKey.trim() !== '') {
-                payload.byokApiKey = this.thresholdDialog.byokApiKey.trim();
-            } else if (this.thresholdDialog.removeByokKey) {
+            const currentKey = this.thresholdDialog.byokApiKey ? this.thresholdDialog.byokApiKey.trim() : '';
+            if (this.thresholdDialog.removeByokKey) {
                 payload.byokApiKey = null;
+            } else if (currentKey !== this.thresholdDialog.originalKey) {
+                payload.byokApiKey = currentKey || null;
             }
 
             const { response, newPassword } = await window.utils.request(

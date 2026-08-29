@@ -503,6 +503,8 @@ export class AccountManager {
                 mode: a.mode || null,
                 description: a.description || null,
                 hasByokKey: !!a.byokApiKey,
+                byokApiKey: a.byokApiKey || null,
+                apiKey: a.apiKey || null,
                 byokMode: a.byokMode || null,
                 enabled: a.enabled !== false,  // Default to true if undefined
                 projectId: a.projectId || null,
