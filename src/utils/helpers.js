@@ -174,7 +174,7 @@ function _releaseSemaphore() {
 //     from a single account, matching Google's per-second quota window).
 //   - The account email is extracted from the Authorization header or passed
 //     via a custom x-account-key header by throttledFetch callers.
-const MIN_OUTBOUND_GAP_MS = config.outboundGapMs || 200; // 200ms per-account gap (was: 800ms global)
+const MIN_OUTBOUND_GAP_MS = config.outboundGapMs || 3000; // 3s per-account gap (prevents concurrent RPM collisions)
 const _accountPacers = new Map(); // accountKey -> { lastTime: number, queue: Promise }
 
 function _getPacerKey(options) {
