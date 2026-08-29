@@ -263,7 +263,7 @@ export class SessionRouter {
 
         for (const [key, entry] of this.#sessions.entries()) {
             const acc = accounts.find(a => a.email === entry.accountEmail);
-            const modelQuota = acc?.models?.[entry.modelId];
+            const modelQuota = acc?.quota?.models?.[entry.modelId] || acc?.models?.[entry.modelId];
             const remainingFraction = modelQuota?.remainingFraction ?? null;
             const remainingPercent = remainingFraction !== null ? Math.round(remainingFraction * 100) : null;
             
