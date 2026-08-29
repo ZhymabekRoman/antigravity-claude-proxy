@@ -134,7 +134,24 @@ div.stat:hover,[class*="stat"]:hover{border-color:var(--border-hi)!important;bac
 .table td{padding:9px 12px!important;color:var(--text-1)!important;vertical-align:middle!important}
 
 /* ── Badges ─────────────────────────────────────────────── */
-.badge{font-size:10px!important;font-weight:600!important;padding:1px 6px!important;border-radius:4px!important;border-width:1px!important;border-style:solid!important;line-height:1.6!important;letter-spacing:0.03em!important;box-shadow:none!important;font-family:var(--mono)!important}
+.badge{
+  font-size:10px!important;
+  font-weight:600!important;
+  padding:2px 8px!important;
+  border-radius:4px!important;
+  border-width:1px!important;
+  border-style:solid!important;
+  line-height:1.4!important;
+  letter-spacing:0.03em!important;
+  box-shadow:none!important;
+  font-family:var(--mono)!important;
+  white-space:nowrap!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  flex-shrink:0!important;
+  height:auto!important;
+}
 .badge-success,[class*="badge"][class*="green"]{background:var(--ok-dim)!important;border-color:rgba(63,185,80,0.3)!important;color:var(--ok)!important}
 .badge-error,[class*="badge"][class*="red"]{background:var(--err-dim)!important;border-color:rgba(248,81,73,0.3)!important;color:var(--err)!important}
 .badge-warning,[class*="badge"][class*="yellow"]{background:var(--warn-dim)!important;border-color:rgba(210,153,34,0.3)!important;color:var(--warn)!important}
@@ -151,11 +168,11 @@ div.stat:hover,[class*="stat"]:hover{border-color:var(--border-hi)!important;bac
 .progress-warning::-webkit-progress-value{background:var(--warn)!important}
 .progress-error::-webkit-progress-value{background:var(--err)!important}
 
-/* Status color fills (inline bars) */
-[class*="bg-neon-green"],[class*="bg-green-4"],[class*="bg-green-5"]{background-color:var(--ok)!important}
-[class*="bg-yellow-4"],[class*="bg-yellow-5"]{background-color:var(--warn)!important}
-[class*="bg-red-4"],[class*="bg-red-5"]{background-color:var(--err)!important}
-[class*="bg-neon-cyan"],[class*="bg-cyan-"]{background-color:#38bdf8!important}
+/* Status color fills (explicit classes only to prevent matching hover:bg-*) */
+.bg-neon-green{background-color:var(--ok)!important}
+.bg-yellow-500{background-color:var(--warn)!important}
+.bg-red-500:not([class*="hover:"]):not([class*="/"]){background-color:var(--err)!important}
+.bg-neon-cyan{background-color:#38bdf8!important}
 
 /* ── Modal ──────────────────────────────────────────────── */
 .modal-box{background:var(--bg-surface)!important;border:1px solid var(--border-hi)!important;border-radius:var(--radius-lg)!important;box-shadow:0 24px 64px rgba(0,0,0,0.6)!important;padding:20px 24px!important}

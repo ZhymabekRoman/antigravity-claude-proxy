@@ -94,18 +94,18 @@
                 <tr class="bg-space-900/50 border-b border-space-border/50">
                     <th class="pl-6 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('enabled')">Enabled</th>
                     <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider flex-1 min-w-[200px]" x-text="$store.global.t('accountEmail')">Account (Email)</th>
-                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-20" x-text="$store.global.t('source')">Source</th>
-                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('tier')">Tier</th>
-                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('quota')">Quota</th>
-                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-24" x-text="$store.global.t('health')">Health</th>
-                    <th class="py-3 pr-6 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('operations')">Operations</th>
+                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-28 min-w-[110px]" x-text="$store.global.t('source')">Source</th>
+                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-24 min-w-[90px]" x-text="$store.global.t('tier')">Tier</th>
+                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-36 min-w-[140px]" x-text="$store.global.t('quota')">Quota</th>
+                    <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-24 min-w-[80px]" x-text="$store.global.t('health')">Health</th>
+                    <th class="py-3 pr-6 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32 min-w-[120px]" x-text="$store.global.t('operations')">Operations</th>
                 </tr>
             </thead>
             <tbody>
                 <!-- Empty State -->
                 <template x-if="$store.data.accounts.length === 0">
                     <tr>
-                        <td colspan="6" class="py-16 text-center">
+                        <td colspan="7" class="py-16 text-center">
                             <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
                                 <svg class="w-20 h-20 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
@@ -152,18 +152,18 @@
                                     <span class="font-mono text-sm text-gray-300 truncate max-w-[280px] inline-block cursor-help group-hover:text-white transition-colors"
                                           x-text="formatEmail(Redact.email(acc.email))">
                                     </span>
-                                    <span x-show="acc.hasByokKey" class="badge badge-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[9px]" title="Account-Level Gemini BYOK Key Active">+BYOK</span>
+                                    <span x-show="acc.hasByokKey" class="badge badge-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[9px] whitespace-nowrap" title="Account-Level Gemini BYOK Key Active">+BYOK</span>
                                 </div>
                             </div>
                         </td>
-                        <td class="py-4">
-                            <span :class="acc.source === 'gemini-byok' ? 'badge badge-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[10px]' : (acc.source === 'oauth' ? 'status-pill-purple' : 'status-pill-free')"
+                        <td class="py-4 whitespace-nowrap">
+                            <span :class="acc.source === 'gemini-byok' ? 'badge badge-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[10px] whitespace-nowrap' : (acc.source === 'oauth' ? 'status-pill-purple' : 'status-pill-free')"
                                   x-text="acc.source === 'gemini-byok' ? 'GEMINI-BYOK' : (acc.source || 'oauth')">
                             </span>
                         </td>
-                        <td class="py-4">
+                        <td class="py-4 whitespace-nowrap">
                             <span :class="{
-                                      'badge badge-sm bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono text-[10px]': acc.source === 'gemini-byok',
+                                      'badge badge-sm bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono text-[10px] whitespace-nowrap': acc.source === 'gemini-byok',
                                       'status-pill-ultra': acc.source !== 'gemini-byok' && acc.subscription?.tier === 'ultra',
                                       'status-pill-pro': acc.source !== 'gemini-byok' && acc.subscription?.tier === 'pro',
                                       'status-pill-free': acc.source !== 'gemini-byok' && (!acc.subscription || acc.subscription.tier === 'free' || acc.subscription.tier === 'unknown')
@@ -171,11 +171,11 @@
                                   x-text="acc.source === 'gemini-byok' ? 'AI STUDIO' : ((acc.subscription?.tier || 'free').toUpperCase())">
                             </span>
                         </td>
-                        <td class="py-4 cursor-pointer" @click="acc.source !== 'gemini-byok' && openQuotaModal(acc)">
+                        <td class="py-4 cursor-pointer whitespace-nowrap" @click="acc.source !== 'gemini-byok' && openQuotaModal(acc)">
                             <template x-if="acc.source === 'gemini-byok'">
-                                <div>
-                                    <span class="text-[11px] font-mono text-blue-400" x-text="acc.mode === 'default_for_gemini_models' ? 'Default for gemini' : 'Fallback on 429'"></span>
-                                    <div class="text-[10px] font-mono text-gray-500">Direct API Key</div>
+                                <div class="flex flex-col gap-0.5">
+                                    <span class="text-[11px] font-mono text-blue-400 whitespace-nowrap" x-text="acc.mode === 'default_for_gemini_models' ? 'Default for gemini' : 'Fallback on 429'"></span>
+                                    <span class="text-[10px] font-mono text-gray-500 whitespace-nowrap">Direct API Key</span>
                                 </div>
                             </template>
                             <template x-if="acc.source !== 'gemini-byok'">
@@ -204,7 +204,7 @@
                                 </div>
                             </template>
                         </td>
-                        <td class="py-4">
+                        <td class="py-4 whitespace-nowrap">
                             <div class="flex items-center gap-2">
                                 <div class="w-2 h-2 rounded-full flex-shrink-0"
                                      :class="acc.source === 'gemini-byok' ? 'bg-blue-400' : (acc.status === 'ok' ?
@@ -223,11 +223,11 @@
                                 </p>
                             </div>
                         </td>
-                        <td class="py-4 pr-6">
-                            <div class="flex justify-end gap-2">
+                        <td class="py-4 pr-6 whitespace-nowrap">
+                            <div class="flex items-center justify-end gap-1.5">
                                 <!-- Fix Button -->
                                 <button x-show="acc.status === 'invalid'"
-                                    class="px-3 py-1 text-[10px] font-bold font-mono uppercase tracking-wider rounded bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 border border-yellow-500/30 hover:border-yellow-500/50 transition-all"
+                                    class="px-2.5 py-1 text-[10px] font-bold font-mono uppercase tracking-wider rounded bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 border border-yellow-500/30 hover:border-yellow-500/50 transition-all"
                                     @click="fixAccount(acc.email)"
                                     x-text="$store.global.t('fix')">
                                     FIX
@@ -235,12 +235,12 @@
                                 <!-- Appeal Button (banned accounts only) -->
                                 <a x-show="acc.status === 'banned'"
                                    href="mailto:gemini-code-assist-user-feedback@google.com"
-                                   class="px-3 py-1 text-[10px] font-bold font-mono uppercase tracking-wider rounded bg-red-900/20 text-red-400 hover:bg-red-900/30 border border-red-800/30 hover:border-red-800/50 transition-all"
+                                   class="px-2.5 py-1 text-[10px] font-bold font-mono uppercase tracking-wider rounded bg-red-900/20 text-red-400 hover:bg-red-900/30 border border-red-800/30 hover:border-red-800/50 transition-all"
                                    title="Email Google to appeal this ban">
                                    APPEAL
                                 </a>
                                 <!-- Settings Button (threshold) -->
-                                <button class="p-2 rounded hover:bg-white/10 text-gray-500 hover:text-neon-yellow transition-colors"
+                                <button class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-gray-400 hover:text-neon-yellow transition-colors"
                                     @click="openThresholdModal(acc)"
                                     title="Account Settings">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -250,7 +250,8 @@
                                             d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                     </svg>
                                 </button>
-                                <button class="p-2 rounded hover:bg-white/10 text-gray-500 hover:text-white transition-colors"
+                                <!-- Refresh Button -->
+                                <button class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
                                     @click="refreshAccount(acc.email)"
                                     :disabled="refreshing"
                                     :title="$store.global.t('refreshData')">
@@ -261,9 +262,10 @@
                                             d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                                     </svg>
                                 </button>
+                                <!-- Delete Button -->
                                 <button
-                                    class="p-2 rounded transition-colors"
-                                    :class="acc.source === 'database' ? 'text-gray-700 cursor-not-allowed' : 'hover:bg-red-500/10 text-gray-500 hover:text-red-400'"
+                                    class="w-7 h-7 flex items-center justify-center rounded transition-colors"
+                                    :class="acc.source === 'database' ? 'text-gray-700 cursor-not-allowed opacity-50' : 'hover:bg-red-500/10 text-gray-400 hover:text-red-400'"
                                     :disabled="acc.source === 'database'"
                                     @click="acc.source !== 'database' && confirmDeleteAccount(acc.email)"
                                     :title="acc.source === 'database' ? $store.global.t('cannotDeleteDatabase') : $store.global.t('delete')">
