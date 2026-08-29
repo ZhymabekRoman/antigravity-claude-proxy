@@ -17,9 +17,10 @@ const __dirname = path.dirname(__filename);
 import { forceRefresh } from './auth/token-extractor.js';
 import { REQUEST_BODY_LIMIT } from './constants.js';
 import { AccountManager } from './account-manager/index.js';
+import crypto from 'crypto';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
-import { logger } from './utils/logger.js';
+import { logger, logContext } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency (defaults to true)
@@ -178,34 +179,34 @@ function parseError(error) {
     return { errorType, statusCode, errorMessage };
 }
 
-// Request logging middleware
+// Request ID & Context tracking middleware
+let _reqCounter = 0;
 app.use((req, res, next) => {
-    const start = Date.now();
+    _reqCounter++;
+    const shortId = (_reqCounter % 10000).toString().padStart(4, '0');
+    const requestId = req.headers['x-request-id'] || `req_${shortId}`;
+    res.setHeader('X-Request-Id', requestId);
+    const store = { requestId, startTime: Date.now() };
 
-    // Log response on finish
     res.on('finish', () => {
-        const duration = Date.now() - start;
-        const status = res.statusCode;
-        const logMsg = `[${req.method}] ${req.originalUrl} ${status} (${duration}ms)`;
+        logContext.run(store, () => {
+            const duration = Date.now() - store.startTime;
+            const status = res.statusCode;
+            const logMsg = `[${req.method}] ${req.originalUrl} ${status} (${duration}ms)`;
 
-        // Skip standard logging for event logging batch unless in debug mode
-        if (req.originalUrl === '/api/event_logging/batch' || req.originalUrl.startsWith('/v1/messages/count_tokens') || req.originalUrl.startsWith('/.well-known/')) {
-            if (logger.isDebugEnabled) {
-                logger.debug(logMsg);
-            }
-        } else {
-            // Colorize status code
-            if (status >= 500) {
-                logger.error(logMsg);
-            } else if (status >= 400) {
-                logger.warn(logMsg);
+            if (req.originalUrl === '/api/event_logging/batch' || req.originalUrl.startsWith('/v1/messages/count_tokens') || req.originalUrl.startsWith('/.well-known/')) {
+                if (logger.isDebugEnabled) logger.debug(logMsg);
             } else {
-                logger.info(logMsg);
+                if (status >= 500) logger.error(logMsg);
+                else if (status >= 400) logger.warn(logMsg);
+                else logger.info(logMsg);
             }
-        }
+        });
     });
 
-    next();
+    logContext.run(store, () => {
+        next();
+    });
 });
 
 /**
@@ -580,6 +581,9 @@ app.get('/account-limits', async (req, res) => {
                     error: acc.error || null,
                     // Include metadata from AccountManager (WebUI needs these)
                     source: metadata.source || 'unknown',
+                    mode: metadata.mode || null,
+                    hasByokKey: metadata.hasByokKey || false,
+                    byokMode: metadata.byokMode || null,
                     enabled: metadata.enabled !== false,
                     projectId: metadata.projectId || null,
                     isInvalid: metadata.isInvalid || false,

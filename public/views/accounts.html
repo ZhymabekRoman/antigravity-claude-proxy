@@ -148,9 +148,12 @@
                         </td>
                         <td class="py-4">
                             <div class="tooltip tooltip-right" :data-tip="Redact.email(acc.email)">
-                                <span class="font-mono text-sm text-gray-300 truncate max-w-[320px] inline-block cursor-help group-hover:text-white transition-colors"
-                                      x-text="formatEmail(Redact.email(acc.email))">
-                                </span>
+                                <div class="flex items-center gap-1.5">
+                                    <span class="font-mono text-sm text-gray-300 truncate max-w-[280px] inline-block cursor-help group-hover:text-white transition-colors"
+                                          x-text="formatEmail(Redact.email(acc.email))">
+                                    </span>
+                                    <span x-show="acc.hasByokKey" class="badge badge-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono text-[9px]" title="Account-Level Gemini BYOK Key Active">+BYOK</span>
+                                </div>
                             </div>
                         </td>
                         <td class="py-4">
@@ -617,6 +620,34 @@
                                 No per-model overrides configured.
                             </p>
                         </template>
+                    </div>
+                </div>
+
+                <!-- Account-Level Gemini-BYOK Section -->
+                <div class="pt-4 border-t border-space-border/30">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs text-blue-400 font-semibold flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                            </svg>
+                            Google AI Studio Key (BYOK)
+                        </span>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-[10px] text-blue-400 hover:underline">Get Free Key ↗</a>
+                    </div>
+                    <div class="space-y-3 bg-space-800/40 p-3 rounded-lg border border-space-border/40">
+                        <div class="form-control">
+                            <input type="password" x-model="thresholdDialog.byokApiKey" placeholder="AIzaSy... (leave empty to disable)" class="input input-xs input-bordered bg-space-900 border-space-border text-white font-mono w-full">
+                        </div>
+                        <div x-show="thresholdDialog.byokApiKey" class="space-y-1.5 pt-1">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="account_byok_mode" value="fallback_on_429" x-model="thresholdDialog.byokMode" class="radio radio-xs radio-primary">
+                                <span class="text-[11px] text-gray-300">Fallback on 429 (use when account is rate-limited)</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" name="account_byok_mode" value="default_for_gemini_models" x-model="thresholdDialog.byokMode" class="radio radio-xs radio-primary">
+                                <span class="text-[11px] text-gray-300">Default for gemini models (always route via key)</span>
+                            </label>
+                        </div>
                     </div>
                 </div>
 

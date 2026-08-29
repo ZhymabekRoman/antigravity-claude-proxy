@@ -502,6 +502,8 @@ export class AccountManager {
                 source: a.source,
                 mode: a.mode || null,
                 description: a.description || null,
+                hasByokKey: !!a.byokApiKey,
+                byokMode: a.byokMode || null,
                 enabled: a.enabled !== false,  // Default to true if undefined
                 projectId: a.projectId || null,
                 modelRateLimits: a.modelRateLimits || {},

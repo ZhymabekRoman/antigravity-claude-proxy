@@ -215,6 +215,8 @@ window.Components.accountManager = () => ({
     openThresholdModal(account) {
         this.thresholdDialog = {
             email: account.email,
+            byokApiKey: account.byokApiKey || '',
+            byokMode: account.byokMode || 'fallback_on_429',
             // Convert from fraction (0-1) to percentage (0-99) for display
             quotaThreshold: account.quotaThreshold !== undefined ? Math.round(account.quotaThreshold * 100) : null,
             modelQuotaThresholds: Object.fromEntries(
@@ -249,7 +251,12 @@ window.Components.accountManager = () => ({
                 {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ quotaThreshold, modelQuotaThresholds })
+                    body: JSON.stringify({
+                        quotaThreshold,
+                        modelQuotaThresholds,
+                        byokApiKey: this.thresholdDialog.byokApiKey ? this.thresholdDialog.byokApiKey.trim() : null,
+                        byokMode: this.thresholdDialog.byokMode
+                    })
                 },
                 store.webuiPassword
             );

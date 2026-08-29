@@ -166,6 +166,14 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         logger.info(`[CloudCode] 🎯 Attempt ${attempt + 1}/${maxAttempts} for ${model} -> selected account: ${account.email} (pinned: ${account === pinnedAccount})`);
 
+        // Check for Account-level Gemini-BYOK key with default routing for Gemini models
+        const isGeminiModel = model.toLowerCase().startsWith('gemini') || model.toLowerCase().includes('flash') || model.toLowerCase().includes('pro');
+        if (account.byokApiKey && account.byokMode === 'default_for_gemini_models' && isGeminiModel) {
+            logger.info(`[CloudCode] 🔑 Executing ${model} via ${account.email}'s attached Gemini-BYOK key`);
+            yield* streamGeminiByok(anthropicRequest, { apiKey: account.byokApiKey });
+            return;
+        }
+
         try {
             // ── PROFILING: token fetch ──────────────────────────────────────────
             const t0 = Date.now();
@@ -526,6 +534,13 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             }
 
         } catch (error) {
+            // Check for Account-level Gemini-BYOK key fallback on rate limit or quota exhaustion
+            if (account.byokApiKey && (isRateLimitError(error) || error.message?.includes('RESOURCE_EXHAUSTED') || error.message?.includes('QUOTA_EXHAUSTED') || isAccountForbiddenError(error))) {
+                logger.info(`[CloudCode] 🔀 Account ${account.email} hit limit, executing fallback via account's attached Gemini-BYOK key`);
+                yield* streamGeminiByok(anthropicRequest, { apiKey: account.byokApiKey });
+                return;
+            }
+
             if (isRateLimitError(error)) {
                 // Rate limited - already marked, notify strategy and continue to next account
                 accountManager.notifyRateLimit(account, model);

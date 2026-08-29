@@ -389,13 +389,24 @@ export function mountWebUI(app, dirname, accountManager) {
     app.patch('/api/accounts/:email', async (req, res) => {
         try {
             const { email } = req.params;
-            const { quotaThreshold, modelQuotaThresholds } = req.body;
+            const { quotaThreshold, modelQuotaThresholds, byokApiKey, byokMode } = req.body;
 
             const { accounts, settings, activeIndex } = await loadAccounts(ACCOUNT_CONFIG_PATH);
             const account = accounts.find(a => a.email === email);
 
             if (!account) {
                 return res.status(404).json({ status: 'error', error: `Account ${email} not found` });
+            }
+
+            // Update per-account Gemini-BYOK API Key if provided
+            if (byokApiKey !== undefined) {
+                if (!byokApiKey || byokApiKey.trim() === '') {
+                    delete account.byokApiKey;
+                    delete account.byokMode;
+                } else if (typeof byokApiKey === 'string') {
+                    account.byokApiKey = byokApiKey.trim();
+                    account.byokMode = byokMode === 'default_for_gemini_models' ? 'default_for_gemini_models' : 'fallback_on_429';
+                }
             }
 
             // Validate and update quotaThreshold (0-0.99 or null/undefined to clear)
