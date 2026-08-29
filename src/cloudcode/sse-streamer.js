@@ -222,12 +222,17 @@ export async function* streamSSEResponse(response, originalModel) {
                             content_block: toolUseBlock
                         };
 
+                        let toolArgs = part.functionCall.args || {};
+                        if (part.functionCall.name === 'EnterPlanMode' || part.functionCall.name === 'ExitPlanMode') {
+                            toolArgs = {};
+                        }
+
                         yield {
                             type: 'content_block_delta',
                             index: blockIndex,
                             delta: {
                                 type: 'input_json_delta',
-                                partial_json: JSON.stringify(part.functionCall.args || {})
+                                partial_json: JSON.stringify(toolArgs)
                             }
                         };
                     } else if (part.inlineData) {

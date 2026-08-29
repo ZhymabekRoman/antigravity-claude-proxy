@@ -489,16 +489,9 @@ function flattenTypeArrays(schema, nullableProps = null, currentPropName = null)
  */
 export function sanitizeSchema(schema) {
     if (!schema || typeof schema !== 'object') {
-        // Empty/missing schema - generate placeholder with reason property
         return {
             type: 'object',
-            properties: {
-                reason: {
-                    type: 'string',
-                    description: 'Reason for calling this tool'
-                }
-            },
-            required: ['reason']
+            properties: {}
         };
     }
 
@@ -550,15 +543,9 @@ export function sanitizeSchema(schema) {
         sanitized.type = 'object';
     }
 
-    // If object type with no properties, add placeholder
-    if (sanitized.type === 'object' && (!sanitized.properties || Object.keys(sanitized.properties).length === 0)) {
-        sanitized.properties = {
-            reason: {
-                type: 'string',
-                description: 'Reason for calling this tool'
-            }
-        };
-        sanitized.required = ['reason'];
+    // If object type with no properties, ensure properties is an object
+    if (sanitized.type === 'object' && !sanitized.properties) {
+        sanitized.properties = {};
     }
 
     return sanitized;

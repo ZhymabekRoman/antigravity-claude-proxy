@@ -205,12 +205,12 @@ async function runTests() {
         assertEqual(result.properties.obj.type, 'OBJECT');
     });
 
-    // Test 9: Empty schema gets placeholder with correct types
-    test('Empty schema gets placeholder with uppercase types', () => {
+    // Test 9: Empty schema produces clean OBJECT without synthetic reason
+    test('Empty schema produces clean OBJECT without synthetic reason', () => {
         const result = cleanSchema(sanitizeSchema(null));
         
         assertEqual(result.type, 'OBJECT');
-        assertEqual(result.properties.reason.type, 'STRING');
+        assertEqual(result.properties, {});
     });
 
     // Test 10: Real-world Claude Code tool schema simulation

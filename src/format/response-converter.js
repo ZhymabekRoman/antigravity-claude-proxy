@@ -54,12 +54,15 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         } else if (part.functionCall) {
             // Convert functionCall to tool_use
             // Use the id from the response if available, otherwise generate one
-            const toolId = part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
+            let toolInput = part.functionCall.args || {};
+            if (part.functionCall.name === 'EnterPlanMode' || part.functionCall.name === 'ExitPlanMode') {
+                toolInput = {};
+            }
             const toolUseBlock = {
                 type: 'tool_use',
                 id: toolId,
                 name: part.functionCall.name,
-                input: part.functionCall.args || {}
+                input: toolInput
             };
 
             // For Gemini 3+, include thoughtSignature from the part level
