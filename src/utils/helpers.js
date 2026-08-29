@@ -204,7 +204,8 @@ function _paceOutboundRequest(pacerKey) {
 // Response timeout for AI generation requests (TTFB).
 // Prevents semaphore slot leaks when Google accepts the TCP connection but stalls
 // on headers for minutes with large payloads (1600+ messages, 77+ tools).
-const FETCH_TIMEOUT_MS = config.fetchTimeoutMs || 120_000; // 2 minutes
+// Set to 12 minutes to accommodate very large prompts where TPU processing is slow.
+const FETCH_TIMEOUT_MS = config.fetchTimeoutMs || 720_000; // 12 minutes
 
 export async function throttledFetch(url, options) {
     const urlStr = typeof url === 'string' ? url : url?.toString?.() || '';
