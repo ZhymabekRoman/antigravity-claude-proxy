@@ -647,7 +647,7 @@
                         <th class="py-2.5 w-24">Type</th>
                         <th class="py-2.5 min-w-[160px]">Assigned Account</th>
                         <th class="py-2.5 min-w-[140px]">Model</th>
-                        <th class="py-2.5 min-w-[150px]">Live Quota</th>
+                        <th class="py-2.5 min-w-[160px]">Quota Used</th>
                         <th class="py-2.5 w-24 text-center">Requests</th>
                         <th class="py-2.5 w-24 text-center">Status</th>
                         <th class="py-2.5 pr-6 w-24 text-right">Idle</th>
@@ -708,27 +708,27 @@
                                 <span class="text-gray-400 text-[11px]" x-text="s.modelId"></span>
                             </td>
 
-                            <!-- Live Quota -->
+                            <!-- Quota Used % -->
                             <td class="py-3 whitespace-nowrap">
                                 <template x-if="s.remainingPercent !== null">
-                                    <div class="flex items-center gap-2">
+                                    <div class="flex items-center gap-2" :title="s.remainingPercent + '% remaining quota'">
                                         <div class="w-16 bg-gray-700/60 rounded-full h-1.5 overflow-hidden flex-shrink-0">
                                             <div class="h-full rounded-full transition-all"
                                                  :class="{
-                                                     'bg-neon-green': s.remainingPercent > 50,
-                                                     'bg-yellow-500': s.remainingPercent > 20 && s.remainingPercent <= 50,
-                                                     'bg-red-500': s.remainingPercent <= 20
+                                                     'bg-neon-green': (100 - s.remainingPercent) <= 50,
+                                                     'bg-yellow-500': (100 - s.remainingPercent) > 50 && (100 - s.remainingPercent) <= 80,
+                                                     'bg-red-500': (100 - s.remainingPercent) > 80
                                                  }"
-                                                 :style="`width: ${s.remainingPercent}%`">
+                                                 :style="`width: ${100 - s.remainingPercent}%`">
                                             </div>
                                         </div>
                                         <span class="text-[11px] font-bold"
                                               :class="{
-                                                  'text-neon-green': s.remainingPercent > 50,
-                                                  'text-yellow-400': s.remainingPercent > 20 && s.remainingPercent <= 50,
-                                                  'text-red-400': s.remainingPercent <= 20
+                                                  'text-neon-green': (100 - s.remainingPercent) <= 50,
+                                                  'text-yellow-400': (100 - s.remainingPercent) > 50 && (100 - s.remainingPercent) <= 80,
+                                                  'text-red-400': (100 - s.remainingPercent) > 80
                                               }"
-                                              x-text="s.remainingPercent + '%'">
+                                              x-text="(100 - s.remainingPercent) + '% USED'">
                                         </span>
                                     </div>
                                 </template>
