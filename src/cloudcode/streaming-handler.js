@@ -199,7 +199,19 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 const endpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex];
                 try {
                     const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
-                    logger.info(`[CloudCode] 🌐 Dispatching stream request -> ${endpoint} (account: ${account.email})`);
+                    const bodyStr = JSON.stringify(payload);
+                    const reqId = `${new Date().toISOString().replace(/[:.]/g, '-')}_${endpoint.includes('daily') ? 'daily' : 'prod'}_${account.email.split('@')[0]}`;
+                    
+                    // Dump request to /tmp
+                    const dumpDir = '/tmp/proxy-debug';
+                    try {
+                        const { mkdirSync, writeFileSync } = await import('fs');
+                        mkdirSync(dumpDir, { recursive: true });
+                        writeFileSync(`${dumpDir}/${reqId}_REQ.json`, bodyStr);
+                        writeFileSync(`${dumpDir}/${reqId}_HEADERS.json`, JSON.stringify(buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email), null, 2));
+                    } catch (e) { logger.warn(`[DEBUG] Failed to dump request: ${e.message}`); }
+                    
+                    logger.info(`[CloudCode] 🌐 Dispatching stream request -> ${endpoint} (account: ${account.email}) bodySize=${bodyStr.length} dump=${reqId}`);
 
                     // ── PROFILING: HTTP TTFB ────────────────────────────────────
                     const tFetch = Date.now();
@@ -211,10 +223,19 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     const ttfbMs = Date.now() - tFetch;
                     if (response.ok) {
                         logger.info(`[PERF][CloudCode] ⚡ TTFB=${ttfbMs}ms endpoint=${endpoint} account=${account.email}${ttfbMs > 3000 ? ' ⚠️ SLOW_TTFB' : ''}`);
+                        try {
+                            const { writeFileSync } = await import('fs');
+                            writeFileSync(`/tmp/proxy-debug/${reqId}_RES_200_OK.txt`, `TTFB=${ttfbMs}ms status=${response.status}`);
+                        } catch (e) { /* ignore */ }
                     }
 
                     if (!response.ok) {
                         const errorText = await response.text();
+                        // Dump error response to /tmp
+                        try {
+                            const { writeFileSync } = await import('fs');
+                            writeFileSync(`/tmp/proxy-debug/${reqId}_RES_${response.status}.json`, errorText);
+                        } catch (e) { /* ignore */ }
                         const reqSummary = {
                             model,
                             msgs: payload.request?.contents?.length || '?',
