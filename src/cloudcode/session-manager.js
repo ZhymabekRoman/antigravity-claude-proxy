@@ -5,8 +5,11 @@
  * Enables per-conversation / per-subagent affinity to maximize Google TPU prompt cache hits.
  */
 
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
 import { logger } from '../utils/logger.js';
+import { SESSIONS_PERSISTENCE_PATH } from '../constants.js';
 
 // Runtime storage for session IDs (per account)
 const runtimeSessionStore = new Map();
@@ -63,14 +66,105 @@ export function extractSessionKey(anthropicRequest) {
 /**
  * Session Router
  * Maintains per-session affinity to accounts to maximize prompt caching hit rate
- * and tracks real-time session analytics.
+ * and persists session routing & analytics to disk across proxy restarts.
  */
 export class SessionRouter {
     #sessions = new Map(); // sessionKey -> { accountEmail, assignedAt, lastUsed, modelId, requestCount, isSubagent, tokens }
     #ttlMs;
+    #maxSessions;
+    #saveTimer = null;
+    #isDirty = false;
 
-    constructor(ttlMs = 45 * 60 * 1000) { // 45 minutes TTL
+    constructor(ttlMs = 24 * 60 * 60 * 1000, maxSessions = 500) { // 24 hours TTL, max 500 entries
         this.#ttlMs = ttlMs;
+        this.#maxSessions = maxSessions;
+        this.#loadFromDisk();
+    }
+
+    /**
+     * Load persisted sessions from disk on startup
+     */
+    #loadFromDisk() {
+        try {
+            if (fs.existsSync(SESSIONS_PERSISTENCE_PATH)) {
+                const raw = fs.readFileSync(SESSIONS_PERSISTENCE_PATH, 'utf8');
+                const data = JSON.parse(raw);
+                if (Array.isArray(data)) {
+                    const now = Date.now();
+                    let loaded = 0;
+                    for (const item of data) {
+                        if (item && item.sessionKey && item.lastUsed && (now - item.lastUsed <= this.#ttlMs)) {
+                            this.#sessions.set(item.sessionKey, {
+                                accountEmail: item.accountEmail,
+                                assignedAt: item.assignedAt || item.lastUsed || now,
+                                lastUsed: item.lastUsed || now,
+                                modelId: item.modelId,
+                                requestCount: item.requestCount || 1,
+                                isSubagent: !!item.isSubagent,
+                                tokens: item.tokens || { input: 0, output: 0 }
+                            });
+                            loaded++;
+                        }
+                    }
+                    this.#pruneStale();
+                    logger.info(`[SessionRouter] Restored ${loaded} persistent session(s) from disk`);
+                }
+            }
+        } catch (e) {
+            logger.warn(`[SessionRouter] Failed to load sessions from disk: ${e.message}`);
+        }
+    }
+
+    /**
+     * Schedule a debounced async save to disk
+     */
+    #scheduleSave() {
+        this.#isDirty = true;
+        if (this.#saveTimer) return;
+        this.#saveTimer = setTimeout(() => {
+            this.#saveTimer = null;
+            this.#saveToDisk();
+        }, 1000);
+    }
+
+    /**
+     * Save active sessions to disk atomically
+     */
+    #saveToDisk() {
+        if (!this.#isDirty) return;
+        try {
+            this.#pruneStale();
+            const dir = path.dirname(SESSIONS_PERSISTENCE_PATH);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+
+            const data = [];
+            for (const [key, entry] of this.#sessions.entries()) {
+                data.push({
+                    sessionKey: key,
+                    accountEmail: entry.accountEmail,
+                    assignedAt: entry.assignedAt,
+                    lastUsed: entry.lastUsed,
+                    modelId: entry.modelId,
+                    requestCount: entry.requestCount,
+                    isSubagent: entry.isSubagent,
+                    tokens: entry.tokens
+                });
+            }
+
+            // Keep top #maxSessions by lastUsed
+            data.sort((a, b) => b.lastUsed - a.lastUsed);
+            const capped = data.slice(0, this.#maxSessions);
+
+            const tempPath = `${SESSIONS_PERSISTENCE_PATH}.tmp.${process.pid}`;
+            fs.writeFileSync(tempPath, JSON.stringify(capped, null, 2), 'utf8');
+            fs.renameSync(tempPath, SESSIONS_PERSISTENCE_PATH);
+            this.#isDirty = false;
+            logger.debug(`[SessionRouter] Saved ${capped.length} session(s) to disk`);
+        } catch (e) {
+            logger.warn(`[SessionRouter] Failed to save sessions to disk: ${e.message}`);
+        }
     }
 
     /**
@@ -93,6 +187,7 @@ export class SessionRouter {
                 entry.lastUsed = Date.now();
                 entry.requestCount = (entry.requestCount || 0) + 1;
                 if (modelId) entry.modelId = modelId;
+                this.#scheduleSave();
                 logger.info(`[CACHE][ROUTING-HIT] 🎯 Session: ${sessionKey} -> Pinned to ${account.email} (prompt cache affinity preserved, reqs: ${entry.requestCount})`);
                 return account;
             }
@@ -100,6 +195,7 @@ export class SessionRouter {
             // Account is no longer in available list (rate limited / invalid) -> Failover
             logger.warn(`[CACHE][ROUTING-FAILOVER] ⚠️ Session: ${sessionKey} -> Previous account ${entry.accountEmail} unavailable, rotating to new account`);
             this.#sessions.delete(sessionKey);
+            this.#scheduleSave();
         } else {
             logger.info(`[CACHE][ROUTING-MISS] 🆕 Session: ${sessionKey} -> No previous affinity found, selecting new account`);
         }
@@ -132,9 +228,11 @@ export class SessionRouter {
                 lastUsed: Date.now(),
                 modelId,
                 requestCount: 1,
-                isSubagent: !!extra.isSubagent
+                isSubagent: !!extra.isSubagent,
+                tokens: { input: 0, output: 0 }
             });
         }
+        this.#scheduleSave();
     }
 
     /**
@@ -147,6 +245,7 @@ export class SessionRouter {
             entry.tokens = entry.tokens || { input: 0, output: 0 };
             entry.tokens.input += (tokens.input_tokens || tokens.inputTokens || 0);
             entry.tokens.output += (tokens.output_tokens || tokens.outputTokens || 0);
+            this.#scheduleSave();
         }
     }
 
@@ -204,6 +303,7 @@ export class SessionRouter {
         for (const [key, entry] of this.#sessions.entries()) {
             if (now - entry.lastUsed > this.#ttlMs) {
                 this.#sessions.delete(key);
+                this.#isDirty = true;
             }
         }
     }
@@ -213,6 +313,8 @@ export class SessionRouter {
      */
     clear() {
         this.#sessions.clear();
+        this.#isDirty = true;
+        this.#saveToDisk();
     }
 }
 
