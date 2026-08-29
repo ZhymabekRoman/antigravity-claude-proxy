@@ -1,12 +1,15 @@
 /**
  * Logger Utility
  *
- * Provides structured logging with colors and debug support.
- * Simple ANSI codes used to avoid dependencies.
+ * Provides structured logging with colors, debug support, and request context tracking.
+ * Uses AsyncLocalStorage so the current request ID is automatically included in every log line.
  */
 
 import { EventEmitter } from 'events';
+import { AsyncLocalStorage } from 'async_hooks';
 import util from 'util';
+
+export const logContext = new AsyncLocalStorage();
 
 const COLORS = {
     RESET: '\x1b[0m',
@@ -54,6 +57,15 @@ class Logger extends EventEmitter {
     }
 
     /**
+     * Get active request ID if available in context
+     * @returns {string|null}
+     */
+    getRequestId() {
+        const ctx = logContext.getStore();
+        return ctx?.requestId || null;
+    }
+
+    /**
      * Format and print a log message
      * @param {string} level
      * @param {string} color
@@ -61,20 +73,24 @@ class Logger extends EventEmitter {
      * @param  {...any} args
      */
     print(level, color, message, ...args) {
-        // Format: [TIMESTAMP] [LEVEL] Message
         const timestampStr = this.getTimestamp();
         const timestamp = `${COLORS.GRAY}[${timestampStr}]${COLORS.RESET}`;
         const levelTag = `${color}[${level}]${COLORS.RESET}`;
 
+        // Extract request ID from AsyncLocalStorage context if present
+        const ctx = logContext.getStore();
+        const reqTag = ctx?.requestId ? `${COLORS.CYAN}[${ctx.requestId}]${COLORS.RESET} ` : '';
+
         // Format the message with args similar to console.log
         const formattedMessage = util.format(message, ...args);
 
-        console.log(`${timestamp} ${levelTag} ${formattedMessage}`);
+        console.log(`${timestamp} ${levelTag} ${reqTag}${formattedMessage}`);
 
         // Store structured log
         const logEntry = {
             timestamp: timestampStr,
             level,
+            requestId: ctx?.requestId || null,
             message: formattedMessage
         };
 
@@ -140,3 +156,4 @@ class Logger extends EventEmitter {
 
 // Export a singleton instance
 export const logger = new Logger();
+

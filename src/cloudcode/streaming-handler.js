@@ -264,12 +264,13 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             const knownQuota = account.quota?.models?.[model]?.remainingFraction ?? null;
 
                             // If account has significant quota (>5%), this 429 is an RPM burst limit.
-                            // Wait briefly and retry the SAME account instead of rotating away from
+                            // Wait patiently and retry the SAME account instead of rotating away from
                             // an account that has 85% daily quota left.
-                            const MAX_RPM_RETRIES = 3;
+                            // Google's RPM window is ~60s, so we use 15/30/45/60/75s progressive waits.
+                            const MAX_RPM_RETRIES = 5;
                             if (knownQuota !== null && knownQuota > 0.05 && rpmRetryCount < MAX_RPM_RETRIES) {
                                 rpmRetryCount++;
-                                const rpmWaitMs = 3000 * rpmRetryCount; // 3s, 6s, 9s
+                                const rpmWaitMs = 15000 * rpmRetryCount; // 15s, 30s, 45s, 60s, 75s
                                 logger.info(`[CloudCode] ⚡ RPM rate limit on ${account.email} (quota: ${(knownQuota * 100).toFixed(0)}%), retry ${rpmRetryCount}/${MAX_RPM_RETRIES} after ${formatDuration(rpmWaitMs)}...`);
                                 await sleep(rpmWaitMs);
                                 endpointIndex = 0; // Reset to try both endpoints fresh

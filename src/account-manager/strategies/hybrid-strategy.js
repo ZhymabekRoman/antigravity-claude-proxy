@@ -99,11 +99,11 @@ export class HybridStrategy extends BaseStrategy {
         // This prevents overwhelming the API when all accounts are stressed
         let waitMs = 0;
         if (fallbackLevel === 'lastResort') {
-            // All accounts exhausted - add significant delay to allow rate limits to clear
-            waitMs = 500;
+            // All accounts exhausted - wait for rate limits to clear
+            waitMs = 2000;
         } else if (fallbackLevel === 'emergency') {
             // All accounts unhealthy - add moderate delay
-            waitMs = 250;
+            waitMs = 1500;
         }
 
         const position = best.index + 1;
