@@ -271,6 +271,12 @@ export class SessionRouter {
             const isRateLimited = acc?.modelRateLimits?.[entry.modelId] && acc.modelRateLimits[entry.modelId] > now;
             const rateLimitExpiry = isRateLimited ? acc.modelRateLimits[entry.modelId] : null;
 
+            const rawKey = acc?.apiKey || acc?.byokApiKey || null;
+            const byokKeyPreview = rawKey ? `${rawKey.slice(0, 8)}...${rawKey.slice(-4)}` : null;
+            const isByok = acc?.source === 'gemini-byok' || !!acc?.byokApiKey;
+            const byokMode = acc?.mode || acc?.byokMode || (acc?.source === 'gemini-byok' ? 'default_for_gemini_models' : null);
+            const accountTier = acc?.source === 'gemini-byok' ? 'byok' : (acc?.subscription?.tier && acc.subscription.tier !== 'unknown' ? acc.subscription.tier : (isByok ? 'byok' : 'free'));
+
             sessionsList.push({
                 sessionKey: key,
                 accountEmail: entry.accountEmail,
@@ -280,8 +286,12 @@ export class SessionRouter {
                 lastUsed: entry.lastUsed,
                 idleSeconds: Math.round((now - entry.lastUsed) / 1000),
                 isSubagent: !!entry.isSubagent,
-                accountTier: acc?.subscription?.tier || (acc?.source === 'gemini-byok' ? 'byok' : 'free'),
+                accountTier,
                 accountSource: acc?.source || 'oauth',
+                isByok,
+                hasByokKey: !!rawKey,
+                byokMode,
+                byokKeyPreview,
                 accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || 'ok'),
                 remainingFraction,
                 remainingPercent,

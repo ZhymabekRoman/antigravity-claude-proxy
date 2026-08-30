@@ -692,14 +692,20 @@
                             <td class="py-3 whitespace-nowrap">
                                 <div class="flex items-center gap-2">
                                     <span class="text-gray-300 truncate max-w-[200px]" x-text="formatEmail(s.accountEmail)"></span>
-                                    <span class="badge badge-xs text-[9px] uppercase whitespace-nowrap"
+                                    <span class="badge badge-xs text-[9px] uppercase whitespace-nowrap font-mono"
                                           :class="{
+                                              'bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold': s.accountTier === 'byok' || s.accountSource === 'gemini-byok',
                                               'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20': s.accountTier === 'ultra',
                                               'bg-blue-500/10 text-blue-400 border border-blue-500/20': s.accountTier === 'pro',
-                                              'bg-gray-500/10 text-gray-400 border border-gray-500/20': s.accountTier === 'free' || s.accountTier === 'byok'
+                                              'bg-gray-500/10 text-gray-400 border border-gray-500/20': s.accountTier === 'free' || s.accountTier === 'unknown'
                                           }"
-                                          x-text="s.accountTier">
+                                          x-text="s.accountSource === 'gemini-byok' || s.accountTier === 'byok' ? 'AI STUDIO' : s.accountTier">
                                     </span>
+                                    <template x-if="s.hasByokKey && s.accountSource !== 'gemini-byok'">
+                                        <span class="badge badge-xs bg-blue-500/10 text-blue-300 border border-blue-500/20 text-[8px] font-mono whitespace-nowrap">
+                                            +BYOK
+                                        </span>
+                                    </template>
                                 </div>
                             </td>
 
@@ -733,7 +739,11 @@
                                     </div>
                                 </template>
                                 <template x-if="s.remainingPercent === null">
-                                    <span class="text-[11px] text-gray-500">N/A (BYOK)</span>
+                                    <div class="flex items-center gap-2 font-mono">
+                                        <span class="badge badge-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[9px] font-bold whitespace-nowrap">BYOK DIRECT</span>
+                                        <span class="text-[11px] text-gray-300" x-text="s.byokKeyPreview ? s.byokKeyPreview : 'Direct API Key'"></span>
+                                        <span class="text-[9px] text-gray-500 hidden sm:inline" x-text="s.byokMode === 'default_for_gemini_models' ? '(Always Key)' : '(429 Fallback)'"></span>
+                                    </div>
                                 </template>
                             </td>
 
