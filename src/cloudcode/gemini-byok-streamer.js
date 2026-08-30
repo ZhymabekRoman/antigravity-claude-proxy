@@ -19,17 +19,20 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models
  * @returns {string} Clean Google AI Studio model name
  */
 export function mapToGeminiStudioModel(model) {
-    if (!model) return 'gemini-2.5-flash';
+    if (!model) return 'gemini-3.7-flash';
     const m = model.toLowerCase();
-    if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-2.5-flash'; // Fallback mapping until 3.7 Studio availability
-    if (m.includes('3.7-pro') || m.includes('3-7-pro')) return 'gemini-2.5-pro';
+    // Direct 3.7 mapping
+    if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
+    if (m.includes('3.7-pro') || m.includes('3-7-pro') || m.includes('3.1-pro')) return 'gemini-3.1-pro-preview';
+    if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
+    if (m.includes('3.5-flash') || m.includes('3-5-flash')) return 'gemini-3.5-flash';
     if (m.includes('2.5-pro') || m.includes('2-5-pro')) return 'gemini-2.5-pro';
     if (m.includes('2.5-flash') || m.includes('2-5-flash')) return 'gemini-2.5-flash';
-    if (m.includes('2.0-flash')) return 'gemini-2.0-flash';
-    if (m.includes('1.5-pro')) return 'gemini-1.5-pro';
-    if (m.includes('1.5-flash')) return 'gemini-1.5-flash';
+    // Claude aliases mapped to best coding models
+    if (m.includes('claude-3-7') || m.includes('claude-3.7') || m.includes('sonnet')) return 'gemini-3.7-flash';
+    if (m.includes('opus')) return 'gemini-2.5-pro';
     if (m.startsWith('gemini-')) return model;
-    return 'gemini-2.5-flash';
+    return 'gemini-3.7-flash';
 }
 
 /**
