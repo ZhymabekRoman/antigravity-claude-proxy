@@ -528,27 +528,38 @@ export class AccountManager {
     getGeminiByokDefaultAccount(model) {
         if (!model) return null;
         const m = model.toLowerCase();
-        const isGemini = m.startsWith('gemini') || m.includes('flash') || m.includes('pro');
+        const isGemini = m.startsWith('gemini') || m.includes('flash') || m.includes('pro') || m.includes('claude');
         if (!isGemini) return null;
 
-        return this.#accounts.find(a => 
-            a.source === 'gemini-byok' && 
+        const acc = this.#accounts.find(a => 
             a.enabled !== false && 
-            a.mode === 'default_for_gemini_models' &&
-            a.apiKey
-        ) || null;
+            (a.mode === 'default_for_gemini_models' || a.byokMode === 'default_for_gemini_models') &&
+            (a.apiKey || a.byokApiKey)
+        );
+
+        if (!acc) return null;
+        return {
+            ...acc,
+            apiKey: acc.apiKey || acc.byokApiKey
+        };
     }
 
     /**
-     * Get Gemini-BYOK fallback account on 429 exhaustion
+     * Get Gemini-BYOK fallback account on 429 exhaustion or when all accounts are unavailable
      * @returns {Object|null} Gemini-BYOK account or null
      */
     getGeminiByokFallbackAccount() {
-        return this.#accounts.find(a => 
-            a.source === 'gemini-byok' && 
+        const acc = this.#accounts.find(a => 
             a.enabled !== false && 
-            a.apiKey
-        ) || null;
+            (a.source === 'gemini-byok' || a.byokApiKey || a.apiKey) &&
+            (a.apiKey || a.byokApiKey)
+        );
+
+        if (!acc) return null;
+        return {
+            ...acc,
+            apiKey: acc.apiKey || acc.byokApiKey
+        };
     }
 
     /**

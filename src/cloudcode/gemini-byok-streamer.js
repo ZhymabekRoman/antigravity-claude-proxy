@@ -45,8 +45,9 @@ export async function* streamGeminiByok(anthropicRequest, byokAccount) {
     const originalModel = anthropicRequest.model;
     const studioModel = mapToGeminiStudioModel(originalModel);
     const googlePayload = convertAnthropicToGoogle(anthropicRequest, true);
+    const apiKey = byokAccount.apiKey || byokAccount.byokApiKey;
 
-    const url = `${GEMINI_API_BASE}/${studioModel}:streamGenerateContent?key=${byokAccount.apiKey}&alt=sse`;
+    const url = `${GEMINI_API_BASE}/${studioModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
     logger.info(`[Gemini-BYOK] 🔑 Executing streaming request model=${studioModel} via Google AI Studio Key`);
 
     const response = await throttledFetch(url, {
@@ -105,8 +106,9 @@ export async function sendGeminiByokMessage(anthropicRequest, byokAccount) {
     const originalModel = anthropicRequest.model;
     const studioModel = mapToGeminiStudioModel(originalModel);
     const googlePayload = convertAnthropicToGoogle(anthropicRequest, true);
+    const apiKey = byokAccount.apiKey || byokAccount.byokApiKey;
 
-    const url = `${GEMINI_API_BASE}/${studioModel}:streamGenerateContent?key=${byokAccount.apiKey}&alt=sse`;
+    const url = `${GEMINI_API_BASE}/${studioModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
     logger.info(`[Gemini-BYOK] 🔑 Executing non-streaming request model=${studioModel} via Google AI Studio Key`);
 
     const response = await throttledFetch(url, {
