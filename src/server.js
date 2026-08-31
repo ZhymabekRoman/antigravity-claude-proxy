@@ -779,6 +779,21 @@ app.post('/v1/messages', async (req, res) => {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
+        } else if (requestedModel === 'claude-low' || requestedModel === 'claude-sonnet-low') {
+            requestedModel = 'claude-sonnet-4-6';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (requestedModel === 'claude-med' || requestedModel === 'claude-medium' || requestedModel === 'claude-sonnet-medium' || requestedModel === 'claude-sonnet-med') {
+            requestedModel = 'claude-sonnet-4-6';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+        } else if (requestedModel === 'claude-high' || requestedModel === 'claude-sonnet-high') {
+            requestedModel = 'claude-sonnet-4-6';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel === 'claude-opus-low') {
+            requestedModel = 'claude-opus-4-6-thinking';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (requestedModel === 'claude-opus-med' || requestedModel === 'claude-opus-medium') {
+            requestedModel = 'claude-opus-4-6-thinking';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
         } else if (
             requestedModel.startsWith('claude-opus') || 
             requestedModel.includes('opus')
@@ -799,13 +814,13 @@ app.post('/v1/messages', async (req, res) => {
         ) {
             // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
             requestedModel = 'claude-sonnet-4-6';
-        } else if (requestedModel === 'gemini-3.7-flash-low') {
+        } else if (requestedModel === 'gemini-3.7-flash-low' || requestedModel === 'flash-low') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'gemini-3.7-flash-medium') {
+        } else if (requestedModel === 'gemini-3.7-flash-medium' || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
+        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash' || requestedModel === 'flash-high') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
         }
