@@ -42,10 +42,10 @@ export function convertAnthropicToGoogle(anthropicRequest) {
 
     const { system, max_tokens, temperature, top_p, top_k, stop_sequences, tools, tool_choice, thinking } = anthropicRequest;
     const modelName = anthropicRequest.model || '';
-    const modelFamily = getModelFamily(modelName);
-    const isClaudeModel = modelFamily === 'claude';
-    const isGeminiModel = modelFamily === 'gemini';
-    const isThinking = isThinkingModel(modelName);
+    const modelFamily = isByok ? 'gemini' : getModelFamily(modelName);
+    const isClaudeModel = !isByok && modelFamily === 'claude';
+    const isGeminiModel = isByok || modelFamily === 'gemini';
+    const isThinking = isThinkingModel(isByok ? 'gemini-3.7-flash' : modelName);
 
     const googleRequest = {
         contents: [],
