@@ -23,7 +23,7 @@ import { formatDuration, sleep, isNetworkError, throttledFetch, getSemaphoreStat
 import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
-import { streamSSEResponse } from './sse-streamer.js';
+import { streamSSEResponse, parseGoogleContinuationStream } from './sse-streamer.js';
 import { getFallbackModel } from '../fallback-config.js';
 import {
     getRateLimitBackoff,
@@ -435,6 +435,38 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     // Stream the response with retry logic for empty responses
                     let currentResponse = response;
 
+                    const onThoughtOnly = async ({ accumulatedThinkingText }) => {
+                        logger.info(`[CloudCode] 🔄 Thought-only response detected (${accumulatedThinkingText?.length || 0} chars). Auto-retrying with tool continuation...`);
+                        try {
+                            const contPayload = JSON.parse(JSON.stringify(payload));
+                            if (contPayload.request?.generationConfig?.thinkingConfig) {
+                                contPayload.request.generationConfig.thinkingConfig.thinkingBudget = 0;
+                            }
+                            const contents = contPayload.request?.contents || [];
+                            if (contents.length > 0) {
+                                const lastContent = contents[contents.length - 1];
+                                if (lastContent && lastContent.role === 'user') {
+                                    lastContent.parts.push({
+                                        text: '\n\n[System Note: Based on your reasoning above, now proceed directly to executing the required tool call(s) or provide the final direct answer. Do not output more reasoning.]'
+                                    });
+                                }
+                            }
+                            const contRes = await throttledFetch(url, {
+                                method: 'POST',
+                                headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
+                                body: JSON.stringify(contPayload)
+                            });
+                            if (!contRes.ok) {
+                                logger.warn(`[CloudCode] Continuation request failed HTTP ${contRes.status}`);
+                                return null;
+                            }
+                            return parseGoogleContinuationStream(contRes);
+                        } catch (err) {
+                            logger.warn(`[CloudCode] Continuation execution error:`, err.message);
+                            return null;
+                        }
+                    };
+
                     for (let emptyRetries = 0; emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES; emptyRetries++) {
                         try {
                             // ── PROFILING: stream duration ──────────────────────
@@ -443,7 +475,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             let outputTokens = 0;
                             let inputTokens = 0;
                             let cachedTokens = 0;
-                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model)) {
+                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model, onThoughtOnly)) {
                                 if (!tFirstToken && (event?.type === 'content_block_delta' || event?.type === 'content_block_start' || event?.type === 'message_delta')) {
                                     tFirstToken = Date.now();
                                 }

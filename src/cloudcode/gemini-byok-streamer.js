@@ -6,7 +6,7 @@
  */
 
 import { convertAnthropicToGoogle } from '../format/index.js';
-import { streamSSEResponse } from './sse-streamer.js';
+import { streamSSEResponse, parseGoogleContinuationStream } from './sse-streamer.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
 import { throttledFetch } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
@@ -63,7 +63,36 @@ export async function* streamGeminiByok(anthropicRequest, byokAccount) {
         throw new Error(`Gemini-BYOK Error (${response.status}): ${errorText.slice(0, 200)}`);
     }
 
-    yield* streamSSEResponse(response, originalModel);
+    const onThoughtOnly = async ({ accumulatedThinkingText }) => {
+        logger.info(`[Gemini-BYOK] 🔄 Thought-only response detected (${accumulatedThinkingText?.length || 0} chars). Auto-retrying with tool continuation...`);
+        try {
+            const contPayload = JSON.parse(JSON.stringify(googlePayload));
+            if (contPayload.generationConfig?.thinkingConfig) {
+                contPayload.generationConfig.thinkingConfig.thinkingBudget = 0;
+            }
+            const contents = contPayload.contents || [];
+            if (contents.length > 0) {
+                const lastContent = contents[contents.length - 1];
+                if (lastContent && lastContent.role === 'user') {
+                    lastContent.parts.push({
+                        text: '\n\n[System Note: Based on your reasoning above, now proceed directly to executing the required tool call(s) or provide the final direct answer. Do not output more reasoning.]'
+                    });
+                }
+            }
+            const contRes = await throttledFetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(contPayload)
+            });
+            if (!contRes.ok) return null;
+            return parseGoogleContinuationStream(contRes);
+        } catch (err) {
+            logger.warn(`[Gemini-BYOK] Continuation execution error:`, err.message);
+            return null;
+        }
+    };
+
+    yield* streamSSEResponse(response, originalModel, onThoughtOnly);
 }
 
 /**

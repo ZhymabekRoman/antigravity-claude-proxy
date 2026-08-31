@@ -15,7 +15,7 @@ import { logger } from '../utils/logger.js';
  * @param {string} originalModel - The original model name
  * @returns {Promise<Object>} Anthropic-format response object
  */
-export async function parseThinkingSSEResponse(response, originalModel) {
+export async function parseThinkingSSEResponse(response, originalModel, onThoughtOnly = null) {
     let accumulatedThinkingText = '';
     let accumulatedThinkingSignature = '';
     let accumulatedText = '';
@@ -104,6 +104,27 @@ export async function parseThinkingSSEResponse(response, originalModel) {
 
     flushThinking();
     flushText();
+
+    // AUTO-RETRY CONTINUATION: If model emitted only thinking and no text/tools
+    const hasTextOrTool = finalParts.some(p => !p.thought);
+    if (!hasTextOrTool && onThoughtOnly) {
+        logger.info('[CloudCode] 🔄 Non-streaming thought-only response detected. Invoking auto-retry continuation...');
+        try {
+            const contParts = await onThoughtOnly({
+                accumulatedThinkingText: finalParts.map(p => p.text || '').join('')
+            });
+            if (contParts && contParts.length > 0) {
+                finalParts.push(...contParts);
+            }
+        } catch (e) {
+            logger.warn('[CloudCode] Non-streaming continuation error:', e.message);
+        }
+    }
+
+    // Fallback if still empty
+    if (!finalParts.some(p => !p.thought)) {
+        finalParts.push({ text: 'Thinking complete.' });
+    }
 
     const accumulatedResponse = {
         candidates: [{ content: { parts: finalParts }, finishReason }],

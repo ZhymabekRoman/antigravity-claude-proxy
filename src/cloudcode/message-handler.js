@@ -368,7 +368,50 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
                     // For thinking models, parse SSE and accumulate all parts
                     if (isThinking) {
-                        const result = await parseThinkingSSEResponse(response, anthropicRequest.model);
+                        const onThoughtOnly = async ({ accumulatedThinkingText }) => {
+                            logger.info(`[CloudCode] 🔄 Thought-only response detected in non-streaming mode. Auto-retrying with tool continuation...`);
+                            try {
+                                const contPayload = JSON.parse(JSON.stringify(payload));
+                                if (contPayload.request?.generationConfig?.thinkingConfig) {
+                                    contPayload.request.generationConfig.thinkingConfig.thinkingBudget = 0;
+                                }
+                                const contents = contPayload.request?.contents || [];
+                                if (contents.length > 0) {
+                                    const lastContent = contents[contents.length - 1];
+                                    if (lastContent && lastContent.role === 'user') {
+                                        lastContent.parts.push({
+                                            text: '\n\n[System Note: Based on your reasoning above, now proceed directly to executing the required tool call(s) or provide the final direct answer. Do not output more reasoning.]'
+                                        });
+                                    }
+                                }
+                                const contRes = await throttledFetch(url, {
+                                    method: 'POST',
+                                    headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
+                                    body: JSON.stringify(contPayload)
+                                });
+                                if (!contRes.ok) return null;
+                                const text = await contRes.text();
+                                const parts = [];
+                                for (const line of text.split('\n')) {
+                                    if (!line.startsWith('data:')) continue;
+                                    const json = line.slice(5).trim();
+                                    if (!json) continue;
+                                    try {
+                                        const data = JSON.parse(json);
+                                        const cand = (data.response || data).candidates?.[0];
+                                        if (cand?.content?.parts) {
+                                            parts.push(...cand.content.parts);
+                                        }
+                                    } catch (e) {}
+                                }
+                                return parts;
+                            } catch (err) {
+                                logger.warn(`[CloudCode] Non-streaming continuation error:`, err.message);
+                                return null;
+                            }
+                        };
+
+                        const result = await parseThinkingSSEResponse(response, anthropicRequest.model, onThoughtOnly);
                         const e2eLatencyMs = Math.max(1, Date.now() - tReqStart);
                         const outputTokens = result?.usage?.output_tokens || 0;
                         const inputTokens = result?.usage?.input_tokens || 0;
