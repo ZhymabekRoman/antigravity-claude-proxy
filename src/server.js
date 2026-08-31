@@ -773,13 +773,32 @@ app.post('/v1/messages', async (req, res) => {
         } = req.body;
 
         // Resolve model mapping if configured or use built-in aliases
-        // By default, map ALL incoming models (including claude-sonnet-4-5 and aliases) to gemini-3.7-flash-tiered
         let requestedModel = model || 'gemini-3.7-flash-tiered';
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
+        } else if (
+            requestedModel.startsWith('claude-opus') || 
+            requestedModel.includes('opus')
+        ) {
+            // Route Claude Opus requests to Antigravity claude-opus-4-6-thinking
+            requestedModel = 'claude-opus-4-6-thinking';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (
+            requestedModel.startsWith('claude-sonnet') || 
+            requestedModel.includes('sonnet') || 
+            requestedModel.includes('claude-3-7') || 
+            requestedModel.includes('claude-3.7') || 
+            requestedModel.includes('claude-3-5') || 
+            requestedModel.includes('claude-3.5') ||
+            requestedModel.startsWith('claude-haiku') ||
+            requestedModel.includes('haiku') ||
+            requestedModel === 'claude'
+        ) {
+            // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
+            requestedModel = 'claude-sonnet-4-6';
         } else if (requestedModel === 'gemini-3.7-flash-low') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
@@ -789,13 +808,6 @@ app.post('/v1/messages', async (req, res) => {
         } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel.includes('opus')) {
-            requestedModel = 'gemini-3.7-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel.includes('claude') || requestedModel.includes('sonnet') || requestedModel.includes('haiku')) {
-            // All Claude / Sonnet / Haiku requests go to gemini-3.7-flash-tiered
-            // Sonnet has extremely tight per-minute RPM limits that exhaust instantly
-            requestedModel = 'gemini-3.7-flash-tiered';
         }
 
         let modelId = requestedModel;

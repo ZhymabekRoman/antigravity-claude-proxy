@@ -247,8 +247,10 @@ export function getModelFamily(modelName) {
  */
 export function isThinkingModel(modelName) {
     const lower = (modelName || '').toLowerCase();
-    // Claude thinking models have "thinking" in the name
-    if (lower.includes('claude') && lower.includes('thinking')) return true;
+    // Claude thinking models have "thinking" in the name or are opus / sonnet-4-6
+    if (lower.includes('claude')) {
+        if (lower.includes('thinking') || lower.includes('opus') || lower.includes('3-7') || lower.includes('3.7') || lower.includes('4-6') || lower.includes('4.6')) return true;
+    }
     // Gemini thinking models: explicit "thinking" in name, OR gemini version 3+
     if (lower.includes('gemini')) {
         if (lower.includes('thinking')) return true;
