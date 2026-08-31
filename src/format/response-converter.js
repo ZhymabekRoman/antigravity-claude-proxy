@@ -54,6 +54,7 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         } else if (part.functionCall) {
             // Convert functionCall to tool_use
             // Use the id from the response if available, otherwise generate one
+            const toolId = part.functionCall.id || part.functionCall.call_id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
             let toolInput = part.functionCall.args || {};
             if (part.functionCall.name === 'EnterPlanMode' || part.functionCall.name === 'ExitPlanMode') {
                 toolInput = {};
