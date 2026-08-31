@@ -33,7 +33,7 @@ import { logger } from '../utils/logger.js';
  * @param {Object} anthropicRequest - Anthropic format request
  * @returns {Object} Request body for Cloud Code API
  */
-export function convertAnthropicToGoogle(anthropicRequest) {
+export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     // [CRITICAL FIX] Pre-clean all cache_control fields from messages (Issue #189)
     // Claude Code CLI sends cache_control on various content blocks, but Cloud Code API
     // rejects them with "Extra inputs are not permitted". Clean them proactively here
