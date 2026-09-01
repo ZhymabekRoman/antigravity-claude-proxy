@@ -76,6 +76,9 @@ export class BaseStrategy {
     isAccountUsable(account, modelId) {
         if (!account || account.isInvalid) return false;
 
+        // Exclude gemini-byok accounts from standard rotation pool (BYOK is fallback only)
+        if (account.source === 'gemini-byok') return false;
+
         // Skip disabled accounts
         if (account.enabled === false) return false;
 
