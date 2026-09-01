@@ -40,6 +40,7 @@ import { telemetry } from '../modules/telemetry.js';
 import crypto from 'crypto';
 
 import { streamGeminiByok } from './gemini-byok-streamer.js';
+import { streamVertex, mapToVertexModel } from './vertex-streamer.js';
 
 /**
  * Send a streaming request to Cloud Code with multi-account support
@@ -197,6 +198,20 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             const t0 = Date.now();
             const token = await accountManager.getTokenForAccount(account);
             const tokenMs = Date.now() - t0;
+
+            // ── Vertex AI (Antigravity Business) route ──────────────────────────
+            // If the account has a gcpProject set, call aiplatform.googleapis.com
+            // directly instead of going through Cloud Code. This is the same API
+            // endpoint used by Antigravity Business — no wrapper, lower latency.
+            const gcpProject = account.gcpProject
+                || accountManager.getSettings?.()?.gcpProject
+                || null;
+
+            if (gcpProject) {
+                logger.info(`[Vertex] 🎯 Routing via Vertex AI for ${account.email} (project: ${gcpProject}, token: ${tokenMs}ms)`);
+                yield* streamVertex(anthropicRequest, token, gcpProject, account.email);
+                return;
+            }
 
             // ── PROFILING: project fetch ────────────────────────────────────────
             const t1 = Date.now();

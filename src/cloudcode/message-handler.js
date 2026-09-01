@@ -40,6 +40,7 @@ import { sessionRouter, extractSessionKey } from './session-manager.js';
 import { telemetry } from '../modules/telemetry.js';
 
 import { sendGeminiByokMessage } from './gemini-byok-streamer.js';
+import { sendVertexMessage } from './vertex-streamer.js';
 
 /**
  * Send a non-streaming request to Cloud Code with multi-account support
@@ -177,6 +178,16 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
             const t0 = Date.now();
             const token = await accountManager.getTokenForAccount(account);
             const tokenMs = Date.now() - t0;
+
+            // ── Vertex AI (Antigravity Business) route ──────────────────────────
+            const gcpProject = account.gcpProject
+                || accountManager.getSettings?.()?.gcpProject
+                || null;
+
+            if (gcpProject) {
+                logger.info(`[Vertex] 🎯 Routing (non-stream) via Vertex AI for ${account.email} (project: ${gcpProject}, token: ${tokenMs}ms)`);
+                return await sendVertexMessage(anthropicRequest, token, gcpProject, account.email);
+            }
 
             const t1 = Date.now();
             const project = await accountManager.getProjectForAccount(account, token);
