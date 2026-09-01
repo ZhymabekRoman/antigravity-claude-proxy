@@ -691,7 +691,7 @@
                             <!-- Assigned Account -->
                             <td class="py-3 whitespace-nowrap">
                                 <div class="flex items-center gap-2">
-                                    <span class="text-gray-300 truncate max-w-[200px]" x-text="formatEmail(s.accountEmail)"></span>
+                                    <span class="text-gray-300 truncate max-w-[280px]" :title="s.accountEmail" x-text="s.accountEmail"></span>
                                     <span class="badge badge-xs text-[9px] uppercase whitespace-nowrap font-mono"
                                           :class="{
                                               'bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold': s.accountTier === 'byok' || s.accountSource === 'gemini-byok',
