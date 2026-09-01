@@ -49,7 +49,13 @@ export function getAvailableAccounts(accounts, modelId = null) {
         if (modelId && acc.modelRateLimits && acc.modelRateLimits[modelId]) {
             const limit = acc.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                return false;
+                const quotaInfo = acc.quota?.models?.[modelId];
+                if (quotaInfo && quotaInfo.remainingFraction > 0) {
+                    limit.isRateLimited = false;
+                    limit.resetTime = null;
+                } else {
+                    return false;
+                }
             }
         }
 

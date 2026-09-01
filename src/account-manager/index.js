@@ -136,6 +136,13 @@ export class AccountManager {
                                 };
                                 logger.warn(`[AccountManager] 🚫 Account ${account.email} has 0% quota for ${modelId}. Locked until Google reset: ${info.resetTime}`);
                             }
+                        } else if (info.remainingFraction > 0) {
+                            // If Google quota has replenished, clear any stale rate limit
+                            if (account.modelRateLimits && account.modelRateLimits[modelId]?.isRateLimited) {
+                                account.modelRateLimits[modelId].isRateLimited = false;
+                                account.modelRateLimits[modelId].resetTime = null;
+                                logger.info(`[AccountManager] ✨ Account ${account.email} has ${Math.round(info.remainingFraction * 100)}% quota for ${modelId}. Rate limit unlocked!`);
+                            }
                         }
                     }
                 }
