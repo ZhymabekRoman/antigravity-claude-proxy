@@ -28,6 +28,7 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
     let accumulatedThinkingText = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let thoughtsTokens = 0;
     let cacheReadTokens = 0;
     let stopReason = null;
 
@@ -55,11 +56,19 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 const googleEvent = JSON.parse(jsonText);
                 const innerResponse = googleEvent.response || googleEvent;
 
-                // Extract usage metadata (including cache tokens)
+                // Extract usage metadata (including cache tokens).
+                // NOTE: Google only sends real numeric counts (promptTokenCount, candidatesTokenCount,
+                // cachedContentTokenCount, thoughtsTokenCount) in the LAST SSE chunk. All earlier
+                // chunks only carry { trafficType: "ON_DEMAND" } with no numeric counts.
                 if (innerResponse.usageMetadata) {
-                    inputTokens = innerResponse.usageMetadata.promptTokenCount || 0;
-                    outputTokens = innerResponse.usageMetadata.candidatesTokenCount || 0;
-                    cacheReadTokens = innerResponse.usageMetadata.cachedContentTokenCount || 0;
+                    const um = innerResponse.usageMetadata;
+                    if (um.promptTokenCount != null)    inputTokens     = um.promptTokenCount;
+                    if (um.cachedContentTokenCount != null) cacheReadTokens = um.cachedContentTokenCount;
+                    // Bug 2 fix: candidatesTokenCount is visible output tokens only.
+                    // thoughtsTokenCount are reasoning/thinking tokens — track separately and sum
+                    // them into outputTokens so the reported count reflects total generation cost.
+                    if (um.candidatesTokenCount != null) outputTokens   = um.candidatesTokenCount;
+                    if (um.thoughtsTokenCount    != null) thoughtsTokens = um.thoughtsTokenCount;
                 }
 
                 const candidates = innerResponse.candidates || [];
@@ -74,10 +83,168 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 const content = firstCandidate.content || {};
                 const parts = content.parts || [];
 
-                // Emit message_start on first data
-                // Note: input_tokens = promptTokenCount - cachedContentTokenCount (Antigravity includes cached in total)
+                // Bug 1 fix: message_start must carry accurate input/cache token counts, but Google
+                // only sends those in the last SSE chunk. Strategy: when we see the first chunk with
+                // content parts, buffer all content events from that chunk, then yield message_start
+                // (with whatever inputTokens/cacheReadTokens are known at this moment) followed
+                // immediately by the buffered events. If usageMetadata arrived in the same chunk as
+                // the first content parts (common pattern: last chunk has both), message_start will
+                // have the real numbers. If it's an earlier chunk, it will have 0 — unavoidable
+                // without full-stream buffering which would destroy streaming latency.
                 if (!hasEmittedStart && parts.length > 0) {
                     hasEmittedStart = true;
+
+                    // Collect all content events from this first-content chunk before yielding
+                    // message_start, so we can emit them atomically right after.
+                    const pendingEvents = [];
+
+                    for (const part of parts) {
+                        if (part.thought === true) {
+                            const text = part.text || '';
+                            const signature = part.thoughtSignature || '';
+
+                            if (currentBlockType !== 'thinking') {
+                                if (currentBlockType !== null) {
+                                    pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                                    blockIndex++;
+                                }
+                                currentBlockType = 'thinking';
+                                currentThinkingSignature = '';
+                                pendingEvents.push({
+                                    type: 'content_block_start',
+                                    index: blockIndex,
+                                    content_block: { type: 'thinking', thinking: '' }
+                                });
+                            }
+
+                            if (signature && signature.length >= MIN_SIGNATURE_LENGTH) {
+                                currentThinkingSignature = signature;
+                                const modelFamily = getModelFamily(originalModel);
+                                cacheThinkingSignature(signature, modelFamily);
+                            }
+
+                            if (text) {
+                                accumulatedThinkingText += text;
+                                pendingEvents.push({
+                                    type: 'content_block_delta',
+                                    index: blockIndex,
+                                    delta: { type: 'thinking_delta', thinking: text }
+                                });
+                            } else if (signature && currentBlockType === 'thinking') {
+                                pendingEvents.push({
+                                    type: 'content_block_delta',
+                                    index: blockIndex,
+                                    delta: { type: 'thinking_delta', thinking: ' ' }
+                                });
+                            }
+
+                        } else if (part.text !== undefined) {
+                            if (part.text === '') continue;
+                            hasEmittedTextOrTool = true;
+
+                            if (currentBlockType !== 'text') {
+                                if (currentBlockType === 'thinking' && currentThinkingSignature) {
+                                    pendingEvents.push({
+                                        type: 'content_block_delta',
+                                        index: blockIndex,
+                                        delta: { type: 'signature_delta', signature: currentThinkingSignature }
+                                    });
+                                    currentThinkingSignature = '';
+                                }
+                                if (currentBlockType !== null) {
+                                    pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                                    blockIndex++;
+                                }
+                                currentBlockType = 'text';
+                                pendingEvents.push({
+                                    type: 'content_block_start',
+                                    index: blockIndex,
+                                    content_block: { type: 'text', text: '' }
+                                });
+                            }
+                            pendingEvents.push({
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: { type: 'text_delta', text: part.text }
+                            });
+
+                        } else if (part.functionCall) {
+                            hasEmittedTextOrTool = true;
+                            const functionCallSignature = part.thoughtSignature || '';
+
+                            if (currentBlockType === 'thinking' && currentThinkingSignature) {
+                                pendingEvents.push({
+                                    type: 'content_block_delta',
+                                    index: blockIndex,
+                                    delta: { type: 'signature_delta', signature: currentThinkingSignature }
+                                });
+                                currentThinkingSignature = '';
+                            }
+                            if (currentBlockType !== null) {
+                                pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                                blockIndex++;
+                            }
+                            currentBlockType = 'tool_use';
+                            stopReason = 'tool_use';
+
+                            const toolId = part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
+                            const toolUseBlock = {
+                                type: 'tool_use',
+                                id: toolId,
+                                name: part.functionCall.name,
+                                input: {}
+                            };
+
+                            if (functionCallSignature && functionCallSignature.length >= MIN_SIGNATURE_LENGTH) {
+                                toolUseBlock.thoughtSignature = functionCallSignature;
+                                cacheSignature(toolId, functionCallSignature);
+                            }
+
+                            pendingEvents.push({
+                                type: 'content_block_start',
+                                index: blockIndex,
+                                content_block: toolUseBlock
+                            });
+
+                            let toolArgs = part.functionCall.args || {};
+                            if (part.functionCall.name === 'EnterPlanMode' || part.functionCall.name === 'ExitPlanMode') {
+                                toolArgs = {};
+                            }
+
+                            pendingEvents.push({
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: { type: 'input_json_delta', partial_json: JSON.stringify(toolArgs) }
+                            });
+
+                        } else if (part.inlineData) {
+                            hasEmittedTextOrTool = true;
+                            if (currentBlockType !== null) {
+                                pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                                blockIndex++;
+                            }
+                            currentBlockType = 'image';
+                            pendingEvents.push({
+                                type: 'content_block_start',
+                                index: blockIndex,
+                                content_block: {
+                                    type: 'image',
+                                    source: {
+                                        type: 'base64',
+                                        media_type: part.inlineData.mimeType || 'image/png',
+                                        data: part.inlineData.data
+                                    }
+                                }
+                            });
+                            pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                            blockIndex++;
+                            currentBlockType = null;
+                        }
+                    }
+
+                    // Emit message_start with the freshest token counts seen so far.
+                    // If usageMetadata arrived in this same chunk (last-chunk pattern), these are
+                    // real numbers. Otherwise they will be 0 — unavoidable without full buffering.
                     yield {
                         type: 'message_start',
                         message: {
@@ -89,16 +256,27 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                             stop_reason: null,
                             stop_sequence: null,
                             usage: {
-                                input_tokens: inputTokens - cacheReadTokens,
+                                input_tokens: Math.max(0, inputTokens - cacheReadTokens),
                                 output_tokens: 0,
                                 cache_read_input_tokens: cacheReadTokens,
                                 cache_creation_input_tokens: 0
                             }
                         }
                     };
+
+                    // Flush all buffered content events from this first-content chunk
+                    for (const ev of pendingEvents) yield ev;
+
+                    // Check finish reason for first-chunk finishReason
+                    if (firstCandidate.finishReason) {
+                        if (firstCandidate.finishReason === 'MAX_TOKENS') stopReason = 'max_tokens';
+                        else if (firstCandidate.finishReason === 'STOP') stopReason = 'end_turn';
+                    }
+
+                    continue; // all parts for this chunk already processed above
                 }
 
-                // Process each part
+                // Process each part for subsequent chunks (after message_start has already fired)
                 for (const part of parts) {
                     if (part.thought === true) {
                         // Handle thinking block
@@ -354,13 +532,16 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
         }
     }
 
-    // Emit message_delta and message_stop
+    // Emit message_delta with final accurate usage (always correct — reads from last SSE chunk).
+    // input_tokens  = uncached portion (promptTokenCount - cachedContentTokenCount)
+    // output_tokens = visible tokens + thinking tokens (candidatesTokenCount + thoughtsTokenCount)
+    // cache_read_input_tokens = cached portion
     yield {
         type: 'message_delta',
         delta: { stop_reason: stopReason || 'end_turn', stop_sequence: null },
         usage: {
             input_tokens: Math.max(0, inputTokens - cacheReadTokens),
-            output_tokens: outputTokens,
+            output_tokens: outputTokens + thoughtsTokens,
             cache_read_input_tokens: cacheReadTokens,
             cache_creation_input_tokens: 0
         }
