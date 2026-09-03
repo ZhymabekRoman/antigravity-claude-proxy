@@ -410,7 +410,16 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                         // 400 errors are client errors - fail immediately, don't retry or switch accounts
                         // Examples: token limit exceeded, invalid schema, malformed request
+                        // EXCEPTION: "User location is not supported" is a geo-restriction on the *model*,
+                        // not a malformed request. Auto-fallback to 3.7 which has broader geo support.
                         if (response.status === 400) {
+                            if (errorText.includes('User location is not supported')) {
+                                const fallbackModel = getFallbackModel(model);
+                                logger.warn(`[CloudCode] ⚠️ Geo-restriction for ${model} from current IP. Transparent fallback to ${fallbackModel}...`);
+                                const geoFallbackRequest = { ...anthropicRequest, model: fallbackModel };
+                                yield* sendMessageStream(geoFallbackRequest, accountManager, true);
+                                return;
+                            }
                             logger.error(`[CloudCode] Invalid request (400): ${errorText.substring(0, 200)}`);
                             throw new Error(`invalid_request_error: ${errorText}`);
                         }
