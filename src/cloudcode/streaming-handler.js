@@ -466,11 +466,60 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     });
                                 }
                             }
-                            const contRes = await throttledFetch(url, {
+
+                            // 1. First try with current account and token
+                            let activeAccount = account;
+                            let activeToken = token;
+                            let contRes = await throttledFetch(url, {
                                 method: 'POST',
-                                headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
+                                headers: buildHeaders(activeToken, model, 'text/event-stream', payload.request.sessionId, activeAccount.email),
                                 body: JSON.stringify(contPayload)
                             });
+
+                            // 2. Multi-Account Failover: If 429/rate-limited, rotate to other available accounts in pool
+                            if (!contRes.ok && contRes.status === 429) {
+                                logger.warn(`[CloudCode] ⚠️ Continuation 429 on ${activeAccount.email}. Rotating to another account in pool...`);
+                                accountManager.markRateLimited(activeAccount.email, model, 2000, 2000);
+
+                                const maxContinuationAttempts = 3;
+                                for (let contAttempt = 1; contAttempt <= maxContinuationAttempts; contAttempt++) {
+                                    const { account: nextAccount } = accountManager.selectAccount();
+                                    if (!nextAccount || nextAccount.email === activeAccount.email) {
+                                        logger.warn(`[CloudCode] No alternative account available for continuation retry (${contAttempt}/${maxContinuationAttempts})`);
+                                        break;
+                                    }
+
+                                    try {
+                                        activeAccount = nextAccount;
+                                        activeToken = await accountManager.getTokenForAccount(activeAccount);
+                                        const nextProject = await accountManager.getProjectForAccount(activeAccount, activeToken);
+                                        const rotatedPayload = JSON.parse(JSON.stringify(contPayload));
+                                        if (nextProject) {
+                                            rotatedPayload.project = nextProject;
+                                        }
+
+                                        logger.info(`[CloudCode] 🔄 Continuation retry attempt ${contAttempt} with account: ${activeAccount.email}`);
+                                        contRes = await throttledFetch(url, {
+                                            method: 'POST',
+                                            headers: buildHeaders(activeToken, model, 'text/event-stream', payload.request.sessionId, activeAccount.email),
+                                            body: JSON.stringify(rotatedPayload)
+                                        });
+
+                                        if (contRes.ok) {
+                                            logger.info(`[CloudCode] ✅ Continuation succeeded with failover account: ${activeAccount.email}`);
+                                            break;
+                                        } else if (contRes.status === 429) {
+                                            logger.warn(`[CloudCode] ⚠️ Failover account ${activeAccount.email} also hit 429 during continuation`);
+                                            accountManager.markRateLimited(activeAccount.email, model, 2000, 2000);
+                                        } else {
+                                            logger.warn(`[CloudCode] Failover continuation returned HTTP ${contRes.status} on ${activeAccount.email}`);
+                                        }
+                                    } catch (rotErr) {
+                                        logger.warn(`[CloudCode] Failover account ${activeAccount.email} error: ${rotErr.message}`);
+                                    }
+                                }
+                            }
+
                             if (!contRes.ok) {
                                 logger.warn(`[CloudCode] Continuation request failed HTTP ${contRes.status}`);
                                 return null;
