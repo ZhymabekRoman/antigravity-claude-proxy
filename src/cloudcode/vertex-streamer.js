@@ -42,6 +42,7 @@ export function mapToVertexModel(model) {
     const m = model.toLowerCase();
 
     // Strip tiered/high/medium/low suffixes
+    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return 'gemini-3.8-flash';
     if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
     if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
     if (m.includes('3.5-flash') || m.includes('3-5-flash')) return 'gemini-3.5-flash';

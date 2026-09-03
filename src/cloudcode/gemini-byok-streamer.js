@@ -21,7 +21,8 @@ const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models
 export function mapToGeminiStudioModel(model) {
     if (!model) return 'gemini-3.7-flash';
     const m = model.toLowerCase();
-    // Direct 3.7 mapping
+    // Direct 3.8 / 3.7 mapping
+    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return 'gemini-3.8-flash';
     if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
     if (m.includes('3.7-pro') || m.includes('3-7-pro') || m.includes('3.1-pro')) return 'gemini-3.1-pro-preview';
     if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
