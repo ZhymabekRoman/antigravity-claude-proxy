@@ -773,7 +773,7 @@ app.post('/v1/messages', async (req, res) => {
         } = req.body;
 
         // Resolve model mapping if configured or use built-in aliases
-        let requestedModel = model || 'gemini-3.7-flash-tiered';
+        let requestedModel = model || 'gemini-3.8-flash-tiered';
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
@@ -814,22 +814,22 @@ app.post('/v1/messages', async (req, res) => {
         ) {
             // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
             requestedModel = 'claude-sonnet-4-6';
-        } else if (requestedModel === 'gemini-3.8-flash-low') {
+        } else if (requestedModel === 'gemini-3.8-flash-low' || requestedModel === 'flash-low') {
             requestedModel = 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'gemini-3.8-flash-medium') {
+        } else if (requestedModel === 'gemini-3.8-flash-medium' || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
             requestedModel = 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'gemini-3.8-flash-high' || requestedModel === 'gemini-3.8-flash') {
+        } else if (requestedModel === 'gemini-3.8-flash-high' || requestedModel === 'gemini-3.8-flash' || requestedModel === 'flash-high') {
             requestedModel = 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel === 'gemini-3.7-flash-low' || requestedModel === 'flash-low') {
+        } else if (requestedModel === 'gemini-3.7-flash-low') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'gemini-3.7-flash-medium' || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
+        } else if (requestedModel === 'gemini-3.7-flash-medium') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash' || requestedModel === 'flash-high') {
+        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
         }
@@ -844,8 +844,8 @@ app.post('/v1/messages', async (req, res) => {
             const valid = await isValidModel(modelId, token, projectId);
 
             if (!valid) {
-                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to gemini-3.7-flash-tiered`);
-                modelId = 'gemini-3.7-flash-tiered';
+                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to gemini-3.8-flash-tiered`);
+                modelId = 'gemini-3.8-flash-tiered';
             }
         }
 
