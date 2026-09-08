@@ -349,6 +349,19 @@ export const DEFAULT_PRESETS = [
             CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-3.8-flash-low',
             ENABLE_EXPERIMENTAL_MCP_CLI: 'true'
         }
+    },
+    {
+        name: 'Hybrid (Sonnet 1M + Gemini Subagents)',
+        config: {
+            ANTHROPIC_AUTH_TOKEN: 'test',
+            ANTHROPIC_BASE_URL: 'http://localhost:8080',
+            ANTHROPIC_MODEL: 'claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6-thinking',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-3.8-flash-low',
+            CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-3.8-flash-low',
+            ENABLE_EXPERIMENTAL_MCP_CLI: 'true'
+        }
     }
 ];
 
