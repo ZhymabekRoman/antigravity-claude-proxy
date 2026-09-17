@@ -10,13 +10,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
 import { sessionRouter } from './cloudcode/session-manager.js';
+import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream } from './providers/router.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { forceRefresh } from './auth/token-extractor.js';
-import { REQUEST_BODY_LIMIT } from './constants.js';
+import { REQUEST_BODY_LIMIT, REROUTE_38_TO_37 } from './constants.js';
 import { AccountManager } from './account-manager/index.js';
 import crypto from 'crypto';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
@@ -143,19 +144,20 @@ function parseError(error) {
     let errorType = 'api_error';
     let statusCode = 500;
     let errorMessage = error.message;
+    logger.error(`[Server] formatApiError caught error:`, error.message, error.stack);
 
     if (error.message.includes('401') || error.message.includes('UNAUTHENTICATED')) {
         errorType = 'authentication_error';
         statusCode = 401;
         errorMessage = 'Authentication failed. Make sure Antigravity is running with a valid token.';
-    } else if (error.message.includes('429') || error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('QUOTA_EXHAUSTED')) {
+    } else if (error.message.includes('429') || error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('QUOTA_EXHAUSTED') || error.message.toLowerCase().includes('rate-limited') || error.message.includes('Rate limited')) {
         errorType = 'rate_limit_error';
         statusCode = 429;
 
-        // Try to extract the quota reset time from the error
-        const resetMatch = error.message.match(/quota will reset after ([\dh\dm\ds]+)/i);
-        // Try to extract model from our error format "Rate limited on <model>" or JSON format
-        const modelMatch = error.message.match(/Rate limited on ([^.]+)\./) || error.message.match(/"model":\s*"([^"]+)"/);
+        // Try to extract the quota reset time or wait duration from the error
+        const resetMatch = error.message.match(/quota will reset after ([\dh\dm\ds]+)/i) || error.message.match(/Shortest wait:\s*([\dh\dm\ds]+)/i);
+        // Try to extract model from error formats like "Rate limited on <model>", "rate-limited for <model>", or JSON format
+        const modelMatch = error.message.match(/rate-limited for ([^\s.]+)/i) || error.message.match(/Rate limited on ([^.]+)\./) || error.message.match(/"model":\s*"([^"]+)"/);
         const model = modelMatch ? modelMatch[1] : 'the model';
 
         if (resetMatch) {
@@ -583,13 +585,14 @@ app.get('/account-limits', async (req, res) => {
                     error: acc.error || null,
                     // Include metadata from AccountManager (WebUI needs these)
                     source: metadata.source || 'unknown',
-                    mode: metadata.mode || null,
-                    hasByokKey: metadata.hasByokKey || false,
-                    byokApiKey: metadata.byokApiKey || null,
-                    apiKey: metadata.apiKey || null,
-                    byokMode: metadata.byokMode || null,
+                    mode: metadata.mode || metadata.byokMode || null,
+                    hasByokKey: metadata.hasByokKey || !!(metadata.byokApiKey || (metadata.source === 'gemini-byok' && metadata.apiKey)),
+                    byokApiKey: metadata.byokApiKey || (metadata.source === 'gemini-byok' ? metadata.apiKey : null),
+                    apiKey: metadata.apiKey || metadata.byokApiKey || null,
+                    byokMode: metadata.byokMode || metadata.mode || null,
                     enabled: metadata.enabled !== false,
                     projectId: metadata.projectId || null,
+                    gcpProject: metadata.gcpProject || null,
                     isInvalid: metadata.isInvalid || false,
                     invalidReason: metadata.invalidReason || null,
                     verifyUrl: metadata.verifyUrl || null,
@@ -774,6 +777,104 @@ app.post('/v1/messages', async (req, res) => {
 
         // Resolve model mapping if configured or use built-in aliases
         let requestedModel = model || 'gemini-3.8-flash-tiered';
+
+        // 1. Dynamic Upstream Provider Check (e.g. CheaperInference for GLM / Qwen / etc.)
+        const customUpstream = findUpstreamForModel(requestedModel);
+        if (customUpstream) {
+            if (!messages || !Array.isArray(messages)) {
+                return res.status(400).json({
+                    type: 'error',
+                    error: {
+                        type: 'invalid_request_error',
+                        message: 'messages is required and must be an array'
+                    }
+                });
+            }
+
+            const request = {
+                model: requestedModel,
+                messages,
+                max_tokens: max_tokens || 4096,
+                stream,
+                system,
+                tools,
+                tool_choice,
+                thinking,
+                top_p,
+                top_k,
+                temperature
+            };
+
+            const promptPreview = messages.length > 0
+                ? (typeof messages[messages.length - 1]?.content === 'string'
+                    ? messages[messages.length - 1].content.slice(0, 80).replace(/\n/g, ' ')
+                    : JSON.stringify(messages[messages.length - 1]?.content || '').slice(0, 80))
+                : '(empty)';
+            logger.info(`[API] 📥 Request -> Upstream "${customUpstream.name}": model=${request.model} | msgs=${messages.length} | stream=${!!stream}`);
+
+            if (stream) {
+                const streamStart = Date.now();
+                try {
+                    const generator = streamCustomUpstream(request, customUpstream);
+                    const firstResult = await generator.next();
+
+                    res.status(200);
+                    res.setHeader('Content-Type', 'text/event-stream');
+                    res.setHeader('Cache-Control', 'no-cache');
+                    res.setHeader('Connection', 'keep-alive');
+                    res.setHeader('X-Accel-Buffering', 'no');
+                    res.flushHeaders();
+
+                    let eventCount = 0;
+                    if (!firstResult.done && firstResult.value) {
+                        eventCount++;
+                        res.write(`event: ${firstResult.value.type}\ndata: ${JSON.stringify(firstResult.value)}\n\n`);
+                        if (res.flush) res.flush();
+                    }
+
+                    for await (const event of generator) {
+                        if (event) {
+                            eventCount++;
+                            res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+                            if (res.flush) res.flush();
+                        }
+                    }
+
+                    const totalStreamDuration = Date.now() - streamStart;
+                    logger.info(`[API] 📤 Upstream stream complete: ${eventCount} SSE events sent in ${totalStreamDuration}ms for "${promptPreview}"`);
+                    return res.end();
+                } catch (error) {
+                    if (!res.headersSent) {
+                        logger.error(`[API] ❌ Upstream error before headers sent:`, error.message);
+                        return res.status(500).json({
+                            type: 'error',
+                            error: {
+                                type: 'api_error',
+                                message: error.message
+                            }
+                        });
+                    } else {
+                        logger.error(`[API] ❌ Upstream stream error:`, error.message);
+                        res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: error.message } })}\n\n`);
+                        return res.end();
+                    }
+                }
+            } else {
+                try {
+                    const response = await sendCustomUpstream(request, customUpstream);
+                    return res.json(response);
+                } catch (error) {
+                    logger.error(`[API] ❌ Upstream error:`, error.message);
+                    return res.status(500).json({
+                        type: 'error',
+                        error: {
+                            type: 'api_error',
+                            message: error.message
+                        }
+                    });
+                }
+            }
+        }
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
@@ -815,14 +916,16 @@ app.post('/v1/messages', async (req, res) => {
             // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
             requestedModel = 'claude-sonnet-4-6';
         } else if (requestedModel === 'gemini-3.8-flash-low' || requestedModel === 'flash-low') {
-            requestedModel = 'gemini-3.8-flash-tiered';
+            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
         } else if (requestedModel === 'gemini-3.8-flash-medium' || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
-            requestedModel = 'gemini-3.8-flash-tiered';
+            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
         } else if (requestedModel === 'gemini-3.8-flash-high' || requestedModel === 'gemini-3.8-flash' || requestedModel === 'flash-high') {
-            requestedModel = 'gemini-3.8-flash-tiered';
+            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel === 'gemini-3.8-flash-tiered') {
+            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
         } else if (requestedModel === 'gemini-3.7-flash-low') {
             requestedModel = 'gemini-3.7-flash-tiered';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };

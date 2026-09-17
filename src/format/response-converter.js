@@ -6,6 +6,7 @@
 import crypto from 'crypto';
 import { MIN_SIGNATURE_LENGTH, getModelFamily } from '../constants.js';
 import { cacheSignature, cacheThinkingSignature } from './signature-cache.js';
+import { config } from '../config.js';
 
 /**
  * Convert Google Generative AI response to Anthropic Messages API format
@@ -103,8 +104,10 @@ export function convertGoogleToAnthropic(googleResponse, model) {
     // Note: Antigravity's promptTokenCount is the TOTAL (includes cached),
     // but Anthropic's input_tokens excludes cached. We subtract to match.
     const usageMetadata = response.usageMetadata || {};
-    const promptTokens = usageMetadata.promptTokenCount || 0;
-    const cachedTokens = usageMetadata.cachedContentTokenCount || 0;
+    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+    const promptTokens = Math.round((usageMetadata.promptTokenCount || 0) * scale);
+    const cachedTokens = Math.round((usageMetadata.cachedContentTokenCount || 0) * scale);
+    const outputTokens = Math.round((usageMetadata.candidatesTokenCount || 0) * scale);
 
     return {
         id: `msg_${crypto.randomBytes(16).toString('hex')}`,
@@ -115,8 +118,8 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         stop_reason: stopReason,
         stop_sequence: null,
         usage: {
-            input_tokens: promptTokens - cachedTokens,
-            output_tokens: usageMetadata.candidatesTokenCount || 0,
+            input_tokens: Math.max(0, promptTokens - cachedTokens),
+            output_tokens: outputTokens,
             cache_read_input_tokens: cachedTokens,
             cache_creation_input_tokens: 0
         }

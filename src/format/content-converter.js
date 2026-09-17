@@ -4,7 +4,7 @@
  */
 
 import { MIN_SIGNATURE_LENGTH, GEMINI_SKIP_SIGNATURE } from '../constants.js';
-import { getCachedSignature, getCachedSignatureFamily } from './signature-cache.js';
+import { getCachedSignature, getCachedSignatureFamily, resolveGeminiThoughtSignature, isGeminiThoughtSignature } from './signature-cache.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -109,7 +109,7 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
                     }
                 }
 
-                part.thoughtSignature = signature || GEMINI_SKIP_SIGNATURE;
+                part.thoughtSignature = resolveGeminiThoughtSignature(signature);
             }
 
             parts.push(part);
@@ -157,9 +157,31 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
             // This ensures all functionResponse parts are consecutive
             deferredInlineData.push(...imageParts);
         } else if (block.type === 'thinking') {
+            // Check if thinking text has meaningful content
+            const thinkingText = block.thinking || '';
+            if (!thinkingText.trim()) continue;
+
             // Handle thinking blocks with signature compatibility check
-            if (block.signature && block.signature.length >= MIN_SIGNATURE_LENGTH) {
-                const signatureFamily = getCachedSignatureFamily(block.signature);
+            let signature = block.signature;
+
+            // If signature is missing from thinking block (e.g. Claude Code strips thinking signatures),
+            // look for thoughtSignature on tool_use blocks within the same message or in cache
+            if ((!signature || signature.length < MIN_SIGNATURE_LENGTH) && isGeminiModel) {
+                const toolBlock = content.find(b => b && b.type === 'tool_use' && (b.thoughtSignature || b.id));
+                if (toolBlock) {
+                    if (toolBlock.thoughtSignature && toolBlock.thoughtSignature.length >= MIN_SIGNATURE_LENGTH) {
+                        signature = toolBlock.thoughtSignature;
+                    } else if (toolBlock.id) {
+                        const cached = getCachedSignature(toolBlock.id);
+                        if (cached && cached.length >= MIN_SIGNATURE_LENGTH) {
+                            signature = cached;
+                        }
+                    }
+                }
+            }
+
+            if (signature && signature.length >= MIN_SIGNATURE_LENGTH) {
+                const signatureFamily = getCachedSignatureFamily(signature);
                 const targetFamily = isClaudeModel ? 'claude' : isGeminiModel ? 'gemini' : null;
 
                 // For Claude: drop unknown or non-Claude signatures.
@@ -170,26 +192,31 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
                     continue;
                 }
 
-                // Drop blocks with incompatible signatures for Gemini (cross-model switch)
-                if (isGeminiModel && signatureFamily && targetFamily && signatureFamily !== targetFamily) {
-                    logger.debug(`[ContentConverter] Dropping incompatible ${signatureFamily} thinking for ${targetFamily} model`);
-                    continue;
-                }
+                // Check if this signature is genuine Gemini
+                const isGeminiSig = isGeminiThoughtSignature(signature) || signatureFamily === 'gemini';
 
-                // Drop blocks with unknown signature origin for Gemini (cold cache - safe default)
-                if (isGeminiModel && !signatureFamily && targetFamily) {
-                    logger.debug(`[ContentConverter] Dropping thinking with unknown signature origin`);
+                // Drop blocks with incompatible signatures for Gemini (cross-model switch)
+                if (isGeminiModel && !isGeminiSig) {
+                    logger.debug(`[ContentConverter] Dropping non-Gemini thinking signature for Gemini model`);
                     continue;
                 }
 
                 // Compatible - convert to Gemini format with signature
                 parts.push({
-                    text: block.thinking,
+                    text: thinkingText,
                     thought: true,
-                    thoughtSignature: block.signature
+                    thoughtSignature: signature
                 });
+            } else if (isGeminiModel) {
+                // For Gemini model text-only turns (no tools), Google accepts thought blocks in history
+                const hasTools = content.some(b => b && b.type === 'tool_use');
+                if (!hasTools) {
+                    parts.push({
+                        text: thinkingText,
+                        thought: true
+                    });
+                }
             }
-            // Unsigned thinking blocks are dropped (existing behavior)
         }
     }
 

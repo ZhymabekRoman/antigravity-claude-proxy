@@ -56,6 +56,7 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     const sanitizeSystemPrompt = (text) => {
         if (!text || typeof text !== 'string') return text;
         return text
+            .replace(/x-anthropic-[a-zA-Z0-9_-]+:[^\n]+/gi, '')
             .replace(/You are a Claude agent, built on Anthropic's Claude Agent SDK\./gi, "You are an agent, built on the Agent SDK.")
             .replace(/built on Anthropic's Claude Agent SDK/gi, "built on the Agent SDK");
     };
@@ -64,13 +65,15 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     if (system) {
         let systemParts = [];
         if (typeof system === 'string') {
-            systemParts = [{ text: sanitizeSystemPrompt(system) }];
+            const sanitized = sanitizeSystemPrompt(system).trim();
+            if (sanitized) systemParts = [{ text: sanitized }];
         } else if (Array.isArray(system)) {
             // Filter for text blocks as system prompts are usually text
             // Anthropic supports text blocks in system prompts
             systemParts = system
                 .filter(block => block.type === 'text')
-                .map(block => ({ text: sanitizeSystemPrompt(block.text) }));
+                .map(block => ({ text: sanitizeSystemPrompt(block.text).trim() }))
+                .filter(block => block.text.length > 0);
         }
 
         if (systemParts.length > 0) {
@@ -133,10 +136,13 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
 
         // For assistant messages, process thinking blocks and reorder content
         if ((msg.role === 'assistant' || msg.role === 'model') && Array.isArray(msgContent)) {
-            // First, try to restore signatures for unsigned thinking blocks from cache
-            msgContent = restoreThinkingSignatures(msgContent);
-            // Remove trailing unsigned thinking blocks
-            msgContent = removeTrailingThinkingBlocks(msgContent);
+            // For Claude models, strictly sanitize and drop unsigned blocks
+            if (isClaudeModel) {
+                // First, try to restore signatures for unsigned thinking blocks from cache
+                msgContent = restoreThinkingSignatures(msgContent);
+                // Remove trailing unsigned thinking blocks
+                msgContent = removeTrailingThinkingBlocks(msgContent);
+            }
             // Reorder: thinking first, then text, then tool_use
             msgContent = reorderAssistantContent(msgContent);
         }

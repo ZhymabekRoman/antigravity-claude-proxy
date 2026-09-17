@@ -3,7 +3,7 @@
  * Handles thinking block processing, validation, and filtering
  */
 
-import { MIN_SIGNATURE_LENGTH } from '../constants.js';
+import { MIN_SIGNATURE_LENGTH, GEMINI_SKIP_SIGNATURE } from '../constants.js';
 import { getCachedSignatureFamily } from './signature-cache.js';
 import { logger } from '../utils/logger.js';
 
@@ -695,4 +695,28 @@ export function closeToolLoopForThinking(messages, targetFamily = null) {
     }
 
     return modified;
+}
+
+/**
+ * Sanitize all thoughtSignatures in a Google payload (or wrapped CloudCode payload)
+ * to GEMINI_SKIP_SIGNATURE.
+ * Used as automatic fallback if Google/Vertex/CloudCode rejects any signature with 400 "Corrupted thought signature."
+ *
+ * @param {Object} payload - The Google request payload or CloudCode wrapped request
+ * @returns {Object} Sanitized payload
+ */
+export function sanitizeThoughtSignatures(payload) {
+    if (!payload) return payload;
+    const contents = payload.contents || payload.request?.contents;
+    if (Array.isArray(contents)) {
+        for (const content of contents) {
+            if (!Array.isArray(content.parts)) continue;
+            for (const part of content.parts) {
+                if (part.functionCall || part.thought || part.thoughtSignature !== undefined) {
+                    part.thoughtSignature = GEMINI_SKIP_SIGNATURE;
+                }
+            }
+        }
+    }
+    return payload;
 }
