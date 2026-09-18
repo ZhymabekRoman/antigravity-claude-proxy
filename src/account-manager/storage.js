@@ -124,33 +124,20 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
         const dir = dirname(configPath);
         await mkdir(dir, { recursive: true });
 
-        // Read current disk content and merge any newly added accounts from CLI
-        let mergedAccounts = [...accounts];
-        try {
-            const currentDisk = JSON.parse(await readFile(configPath, 'utf-8'));
-            if (Array.isArray(currentDisk.accounts)) {
-                for (const diskAcc of currentDisk.accounts) {
-                    if (diskAcc.email && !mergedAccounts.some(a => a.email === diskAcc.email)) {
-                        mergedAccounts.push(diskAcc);
-                    }
-                }
-            }
-        } catch {
-            // Ignore read errors if file doesn't exist
-        }
+        const mergedAccounts = [...accounts];
 
         const config = {
             accounts: mergedAccounts.map(acc => ({
                 email: acc.email,
                 source: acc.source,
-                mode: acc.mode || undefined,
+                mode: acc.mode || acc.byokMode || undefined,
                 description: acc.description || undefined,
-                byokApiKey: acc.byokApiKey || undefined,
-                byokMode: acc.byokMode || undefined,
+                byokApiKey: acc.byokApiKey || (acc.source === 'gemini-byok' ? acc.apiKey : undefined),
+                byokMode: acc.byokMode || acc.mode || undefined,
                 enabled: acc.enabled !== false,
                 dbPath: acc.dbPath || null,
                 refreshToken: acc.source === 'oauth' ? acc.refreshToken : undefined,
-                apiKey: (acc.source === 'manual' || acc.source === 'gemini-byok') ? acc.apiKey : undefined,
+                apiKey: (acc.source === 'manual' || acc.source === 'gemini-byok') ? (acc.apiKey || acc.byokApiKey) : undefined,
                 projectId: acc.projectId || undefined,
                 addedAt: acc.addedAt || undefined,
                 isInvalid: acc.isInvalid || false,
@@ -159,6 +146,8 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
                 modelRateLimits: acc.modelRateLimits || {},
                 lastUsed: acc.lastUsed,
                 subscription: acc.subscription || { tier: 'unknown', projectId: null, detectedAt: null },
+                gcpProject: acc.gcpProject || undefined,
+                authMethod: acc.authMethod || undefined,
                 quota: acc.quota || { models: {}, lastChecked: null },
                 quotaThreshold: acc.quotaThreshold,
                 modelQuotaThresholds: Object.keys(acc.modelQuotaThresholds || {}).length > 0 ? acc.modelQuotaThresholds : undefined
