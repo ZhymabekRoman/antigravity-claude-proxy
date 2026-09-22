@@ -1506,6 +1506,122 @@
                         </div>
                     </div>
 
+                    <!-- Weighted Model Split & TPU Cache Affinity -->
+                    <div class="form-control view-card border-space-border/50 hover:border-emerald-400/50"
+                        :class="serverConfig.modelSplit?.enabled ? 'border-emerald-400/50 bg-emerald-500/5' : ''">
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.modelSplit?.enabled ? 'text-emerald-400' : ''"
+                                        x-text="$store.global.t('modelSplit')">Weighted Model Split (TPU Cache Focused)</span>
+                                    <span class="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">TPU Cache</span>
+                                    <template x-if="serverConfig.modelSplit?.enabled">
+                                        <span class="px-1.5 py-0.5 text-[9px] font-mono font-semibold rounded bg-space-800 text-gray-300 border border-space-border/80"
+                                            x-text="`${serverConfig.modelSplit?.gemini37Weight ?? 60}% 3.7 / ${serverConfig.modelSplit?.gemini38Weight ?? 40}% 3.8`"></span>
+                                    </template>
+                                </div>
+                                <span class="text-[11px] text-gray-500"
+                                    x-text="$store.global.t('modelSplitDesc')">Distribute Flash requests across 3.7 Flash and 3.8 Flash using Smooth Weighted Round-Robin pinned per conversation session to maximize TPU KV cache hits. Takes precedence over binary remap.</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer"
+                                    :checked="serverConfig.modelSplit?.enabled === true"
+                                    @change="toggleModelSplit($el.checked)" aria-label="Model Split toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-400 peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- Weight Controls (visible when enabled) -->
+                        <div x-show="serverConfig.modelSplit?.enabled" x-collapse class="mt-4 pt-3 border-t border-space-border/40 space-y-3">
+                            <div class="flex items-center justify-between text-xs text-gray-400">
+                                <span>Session Model Allocation Ratio:</span>
+                                <span class="font-mono text-emerald-400 font-semibold"
+                                    x-text="`3.7 Flash: ${serverConfig.modelSplit?.gemini37Weight ?? 60}% | 3.8 Flash: ${serverConfig.modelSplit?.gemini38Weight ?? 40}%`"></span>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-[11px] text-gray-400 mb-1">Gemini 3.7 Flash Weight (%)</label>
+                                    <input type="number" min="0" max="100" class="input input-bordered input-xs w-full bg-space-900 border-space-border/60 text-white font-mono"
+                                        :value="serverConfig.modelSplit?.gemini37Weight ?? 60"
+                                        @change="updateModelSplitWeights(parseInt($el.value) || 0, 100 - (parseInt($el.value) || 0))">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] text-gray-400 mb-1">Gemini 3.8 Flash Weight (%)</label>
+                                    <input type="number" min="0" max="100" class="input input-bordered input-xs w-full bg-space-900 border-space-border/60 text-white font-mono"
+                                        :value="serverConfig.modelSplit?.gemini38Weight ?? 40"
+                                        @change="updateModelSplitWeights(100 - (parseInt($el.value) || 0), parseInt($el.value) || 0)">
+                                </div>
+                            </div>
+
+                            <!-- Dual Ratio Slider -->
+                            <div class="pt-1">
+                                <input type="range" min="0" max="100" class="custom-range flex-1 w-full"
+                                    :value="serverConfig.modelSplit?.gemini37Weight ?? 60"
+                                    @input="updateModelSplitWeights(parseInt($el.value), 100 - parseInt($el.value))"
+                                    aria-label="Model Split Ratio Slider">
+                                <div class="flex justify-between text-[10px] text-gray-500 font-mono mt-1">
+                                    <span>100% 3.8 Flash</span>
+                                    <span>50% / 50%</span>
+                                    <span>100% 3.7 Flash</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Gemini 3.8 to 3.7 Reroute -->
+                    <div class="form-control view-card border-space-border/50 hover:border-neon-cyan/50"
+                        :class="serverConfig.reroute38To37 ? 'border-neon-cyan/50 bg-neon-cyan/5' : ''">
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.reroute38To37 ? 'text-neon-cyan' : ''"
+                                        x-text="$store.global.t('reroute38To37')">Reroute Gemini 3.8 to 3.7 Flash</span>
+                                    <span class="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide rounded bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/30">Remap</span>
+                                </div>
+                                <span class="text-[11px] text-gray-500"
+                                    x-text="$store.global.t('reroute38To37Desc')">Automatically redirect all Gemini 3.8 Flash requests to 3.7 Flash across all providers.</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer"
+                                    :checked="serverConfig.reroute38To37 === true"
+                                    @change="toggleReroute38To37($el.checked)" aria-label="Reroute 3.8 to 3.7 toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Vertex AI Flex Mode Toggle -->
+                    <div class="form-control view-card border-space-border/50 hover:border-neon-purple/50"
+                        :class="serverConfig.vertexFlexMode ? 'border-neon-purple/50 bg-neon-purple/5' : ''">
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.vertexFlexMode ? 'text-neon-purple' : ''"
+                                        x-text="$store.global.t('vertexFlexMode')">Vertex AI Flex Mode</span>
+                                    <span class="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide rounded bg-neon-purple/10 text-neon-purple border border-neon-purple/30">Vertex</span>
+                                </div>
+                                <span class="text-[11px] text-gray-500"
+                                    x-text="$store.global.t('vertexFlexModeDesc')">Send requests with shared flex headers (X-Vertex-AI-LLM-Request-Type: shared, X-Vertex-AI-LLM-Shared-Request-Type: flex) on Vertex AI endpoints.</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer"
+                                    :checked="serverConfig.vertexFlexMode === true"
+                                    @change="toggleVertexFlexMode($el.checked)" aria-label="Vertex AI Flex mode toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
                     <!-- Max Accounts -->
                     <div class="form-control view-card border-space-border/50 hover:border-neon-cyan/50">
                         <label class="label pt-0">

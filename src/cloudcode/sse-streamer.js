@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { MIN_SIGNATURE_LENGTH, getModelFamily } from '../constants.js';
 import { EmptyResponseError } from '../errors.js';
 import { cacheSignature, cacheThinkingSignature } from '../format/signature-cache.js';
+import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -62,13 +63,14 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 // chunks only carry { trafficType: "ON_DEMAND" } with no numeric counts.
                 if (innerResponse.usageMetadata) {
                     const um = innerResponse.usageMetadata;
-                    if (um.promptTokenCount != null)    inputTokens     = um.promptTokenCount;
-                    if (um.cachedContentTokenCount != null) cacheReadTokens = um.cachedContentTokenCount;
+                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+                    if (um.promptTokenCount != null)    inputTokens     = Math.round(um.promptTokenCount * scale);
+                    if (um.cachedContentTokenCount != null) cacheReadTokens = Math.round(um.cachedContentTokenCount * scale);
                     // Bug 2 fix: candidatesTokenCount is visible output tokens only.
                     // thoughtsTokenCount are reasoning/thinking tokens — track separately and sum
                     // them into outputTokens so the reported count reflects total generation cost.
-                    if (um.candidatesTokenCount != null) outputTokens   = um.candidatesTokenCount;
-                    if (um.thoughtsTokenCount    != null) thoughtsTokens = um.thoughtsTokenCount;
+                    if (um.candidatesTokenCount != null) outputTokens   = Math.round(um.candidatesTokenCount * scale);
+                    if (um.thoughtsTokenCount    != null) thoughtsTokens = Math.round(um.thoughtsTokenCount * scale);
                 }
 
                 const candidates = innerResponse.candidates || [];
@@ -580,7 +582,8 @@ export async function* parseGoogleContinuationStream(response) {
                 const googleEvent = JSON.parse(jsonText);
                 const innerResponse = googleEvent.response || googleEvent;
                 if (innerResponse.usageMetadata?.candidatesTokenCount) {
-                    outputTokens += innerResponse.usageMetadata.candidatesTokenCount;
+                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+                    outputTokens += Math.round(innerResponse.usageMetadata.candidatesTokenCount * scale);
                 }
 
                 const candidates = innerResponse.candidates || [];

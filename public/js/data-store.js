@@ -12,6 +12,7 @@ document.addEventListener('alpine:init', () => {
         models: [], // Source of truth
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         quotaRows: [], // Filtered view
+        groupedQuotaRows: [], // Grouped by model family / group
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
         sessions: [], // Real-time active sessions & quota routing analytics
         telemetry: {
@@ -397,6 +398,37 @@ document.addEventListener('alpine:init', () => {
                 return sortAsc ? valA - valB : valB - valA;
             });
 
+            // Build groupedQuotaRows from sorted quotaRows
+            const groupMap = new Map();
+            this.quotaRows.forEach(row => {
+                const groupDef = this.getModelGroup(row.modelId);
+                if (!groupMap.has(groupDef.id)) {
+                    groupMap.set(groupDef.id, {
+                        id: groupDef.id,
+                        name: groupDef.name,
+                        badge: groupDef.badge,
+                        color: groupDef.color,
+                        order: groupDef.order,
+                        rows: [],
+                        totalModels: 0,
+                        activeModels: 0,
+                        totalAvgQuota: 0
+                    });
+                }
+                const g = groupMap.get(groupDef.id);
+                g.rows.push(row);
+                g.totalModels++;
+                if (row.avgQuota > 0) g.activeModels++;
+                g.totalAvgQuota += row.avgQuota;
+            });
+
+            this.groupedQuotaRows = Array.from(groupMap.values())
+                .map(g => ({
+                    ...g,
+                    avgQuota: g.totalModels > 0 ? Math.round(g.totalAvgQuota / g.totalModels) : 0
+                }))
+                .sort((a, b) => a.order - b.order);
+
             // Trigger Dashboard Update if active
             // Ideally dashboard watches this store.
         },
@@ -417,10 +449,90 @@ document.addEventListener('alpine:init', () => {
         },
 
         getModelFamily(modelId) {
-            const lower = modelId.toLowerCase();
+            const lower = (modelId || '').toLowerCase();
             if (lower.includes('claude')) return 'claude';
             if (lower.includes('gemini')) return 'gemini';
             return 'other';
+        },
+
+        getModelGroup(modelId) {
+            const id = (modelId || '').toLowerCase();
+            const globalStore = Alpine.store('global');
+
+            // 1. Agent / Tool specialized models
+            if (id.includes('agent')) {
+                return {
+                    id: 'agent',
+                    name: globalStore ? (globalStore.t('groupAgent') || 'Agent Models') : 'Agent Models',
+                    badge: 'AGENT',
+                    color: 'yellow',
+                    order: 4
+                };
+            }
+
+            // 2. Claude family
+            if (id.includes('claude')) {
+                return {
+                    id: 'claude',
+                    name: globalStore ? (globalStore.t('groupClaude') || 'Claude Models') : 'Claude Models',
+                    badge: 'CLAUDE',
+                    color: 'purple',
+                    order: 1
+                };
+            }
+
+            // 3. Gemini Pro family
+            if (id.includes('gemini') && (id.includes('pro') || id.includes('ultra'))) {
+                return {
+                    id: 'gemini-pro',
+                    name: globalStore ? (globalStore.t('groupGeminiPro') || 'Gemini Pro') : 'Gemini Pro',
+                    badge: 'PRO',
+                    color: 'cyan',
+                    order: 3
+                };
+            }
+
+            // 4. Gemini Flash family (includes tiered, lite, etc.)
+            if (id.includes('gemini') && (id.includes('flash') || id.includes('lite'))) {
+                return {
+                    id: 'gemini-flash',
+                    name: globalStore ? (globalStore.t('groupGeminiFlash') || 'Gemini Flash') : 'Gemini Flash',
+                    badge: 'FLASH',
+                    color: 'green',
+                    order: 2
+                };
+            }
+
+            // 5. Any other Gemini models
+            if (id.includes('gemini')) {
+                return {
+                    id: 'gemini-flash',
+                    name: globalStore ? (globalStore.t('groupGeminiFlash') || 'Gemini Flash') : 'Gemini Flash',
+                    badge: 'GEMINI',
+                    color: 'green',
+                    order: 2
+                };
+            }
+
+            // 6. OpenAI / GPT models
+            if (id.includes('gpt') || id.startsWith('o1') || id.startsWith('o3')) {
+                return {
+                    id: 'openai',
+                    name: 'OpenAI Models',
+                    badge: 'OPENAI',
+                    color: 'blue',
+                    order: 5
+                };
+            }
+
+            // 7. Other / Uncategorized
+            return {
+                id: 'other',
+                name: globalStore ? (globalStore.t('groupOther') || 'Other Models') : 'Other Models',
+                badge: 'OTHER',
+                color: 'gray',
+                order: 6
+            };
         },
 
         /**

@@ -6,6 +6,7 @@
  */
 
 import { isAccountCoolingDown } from '../rate-limits.js';
+import { getByokUsage, GEMINI_BYOK_LIMITS } from '../../cloudcode/gemini-byok-streamer.js';
 
 /**
  * @typedef {Object} SelectionResult
@@ -76,20 +77,52 @@ export class BaseStrategy {
     isAccountUsable(account, modelId) {
         if (!account || account.isInvalid) return false;
 
-        // Exclude gemini-byok accounts from standard rotation pool (BYOK is fallback only)
-        if (account.source === 'gemini-byok') return false;
-
         // Skip disabled accounts
         if (account.enabled === false) return false;
 
         // Check if account is cooling down (matches opencode-antigravity-auth)
         if (isAccountCoolingDown(account)) return false;
 
+        // Preemptive gating for Gemini BYOK accounts (Free Tier quotas & Spend Cap)
+        if (account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken)) {
+            // Check dollar spend cap
+            if (typeof account.spendCapUsd === 'number' && account.spendCapUsd > 0) {
+                if ((account.currentSpendUsd || 0) >= account.spendCapUsd) {
+                    return false;
+                }
+            }
+
+            const isPro = modelId && (modelId.includes('pro') || modelId.includes('opus'));
+            const limits = isPro ? GEMINI_BYOK_LIMITS.pro : GEMINI_BYOK_LIMITS.flash;
+            const accountKey = account.email || account.apiKey || 'byok';
+            const usage = getByokUsage(accountKey);
+
+            // Preemptively gate if sliding window RPM exceeded
+            if (usage.requests && usage.requests.length >= limits.rpm) {
+                return false;
+            }
+
+            // Preemptively gate if daily RPD exceeded
+            if (usage.dailyCount >= limits.rpd) {
+                return false;
+            }
+
+            // Preemptively gate if sliding window TPM exceeded
+            if (usage.tokens && limits.tpm) {
+                const currentTpm = usage.tokens.reduce((sum, item) => sum + item.count, 0);
+                if (currentTpm >= limits.tpm) {
+                    return false;
+                }
+            }
+        }
+
         // Check model-specific rate limit
         if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
             const limit = account.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                return false;
+                if (!account.gcpProject) {
+                    return false;
+                }
             }
         }
 

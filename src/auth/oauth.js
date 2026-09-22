@@ -13,6 +13,7 @@ import {
     LOAD_CODE_ASSIST_HEADERS,
     CLIENT_METADATA,
     OAUTH_CONFIG,
+    GCP_OAUTH_CONFIG,
     OAUTH_REDIRECT_URI
 } from '../constants.js';
 import { logger } from '../utils/logger.js';
@@ -397,20 +398,24 @@ export async function exchangeCode(code, verifier) {
  * Handles composite refresh tokens (refreshToken|projectId|managedProjectId)
  *
  * @param {string} compositeRefresh - OAuth refresh token (may be composite)
+ * @param {Object} [options] - Optional settings (e.g. authMethod)
  * @returns {Promise<{accessToken: string, expiresIn: number}>} New access token
  */
-export async function refreshAccessToken(compositeRefresh) {
+export async function refreshAccessToken(compositeRefresh, options = {}) {
     // Parse the composite refresh token to extract the actual OAuth token
     const parts = parseRefreshParts(compositeRefresh);
 
-    const response = await throttledFetch(OAUTH_CONFIG.tokenUrl, {
+    const isGcp = options.authMethod === 'gcp' || options.isGcp;
+    const clientConfig = isGcp && GCP_OAUTH_CONFIG ? GCP_OAUTH_CONFIG : OAUTH_CONFIG;
+
+    const response = await throttledFetch(clientConfig.tokenUrl || OAUTH_CONFIG.tokenUrl, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
         },
         body: new URLSearchParams({
-            client_id: OAUTH_CONFIG.clientId,
-            client_secret: OAUTH_CONFIG.clientSecret,
+            client_id: clientConfig.clientId,
+            client_secret: clientConfig.clientSecret,
             refresh_token: parts.refreshToken,  // Use the actual OAuth token
             grant_type: 'refresh_token'
         })

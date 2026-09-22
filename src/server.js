@@ -17,7 +17,7 @@ import { config } from './config.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { forceRefresh } from './auth/token-extractor.js';
-import { REQUEST_BODY_LIMIT, REROUTE_38_TO_37 } from './constants.js';
+import { REQUEST_BODY_LIMIT, isReroute38To37, isModelSplitEnabled } from './constants.js';
 import { AccountManager } from './account-manager/index.js';
 import crypto from 'crypto';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
@@ -25,6 +25,8 @@ import { formatDuration } from './utils/helpers.js';
 import { logger, logContext } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
 import { telemetry } from './modules/telemetry.js';
+import { modelSplitter } from './cloudcode/model-splitter.js';
+import { extractSessionKey } from './cloudcode/session-manager.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency (defaults to true)
 const args = process.argv.slice(2);
@@ -369,6 +371,22 @@ app.get('/account-limits', async (req, res) => {
                     };
                 }
 
+                // Handle Gemini BYOK Accounts (Free Tier limits)
+                if (account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken)) {
+                    const { getByokQuotaInfo } = await import('./cloudcode/gemini-byok-streamer.js');
+                    const quotas = {
+                        'gemini-2.5-flash': getByokQuotaInfo(account, 'gemini-2.5-flash'),
+                        'gemini-2.5-pro': getByokQuotaInfo(account, 'gemini-2.5-pro'),
+                        'gemini-3.7-flash': getByokQuotaInfo(account, 'gemini-3.7-flash')
+                    };
+                    return {
+                        email: account.email,
+                        status: 'ok',
+                        subscription: { tier: 'byok-free', projectId: null, detectedAt: Date.now() },
+                        models: quotas
+                    };
+                }
+
                 try {
                     const token = await accountManager.getTokenForAccount(account);
 
@@ -601,6 +619,11 @@ app.get('/account-limits', async (req, res) => {
                     // Quota threshold settings
                     quotaThreshold: metadata.quotaThreshold,
                     modelQuotaThresholds: metadata.modelQuotaThresholds || {},
+                    // BYOK spend cap & cost tracking
+                    spendCapUsd: metadata.spendCapUsd ?? null,
+                    currentSpendUsd: metadata.currentSpendUsd || 0,
+                    isSpendCapped: !!metadata.isSpendCapped,
+                    spendStats: metadata.spendStats || null,
                     // Subscription data (new)
                     subscription: acc.subscription || metadata.subscription || { tier: 'unknown', projectId: null },
                     // Quota limits
@@ -615,7 +638,15 @@ app.get('/account-limits', async (req, res) => {
                                     ? `${Math.round(quota.remainingFraction * 100)}%`
                                     : 'N/A',
                                 remainingFraction: quota.remainingFraction,
-                                resetTime: quota.resetTime || null
+                                resetTime: quota.resetTime || null,
+                                category: quota.category || null,
+                                rpmUsed: quota.rpmUsed,
+                                rpmLimit: quota.rpmLimit,
+                                rpdUsed: quota.rpdUsed,
+                                rpdLimit: quota.rpdLimit,
+                                tpmUsed: quota.tpmUsed,
+                                tpmLimit: quota.tpmLimit,
+                                isRateLimited: quota.isRateLimited
                             }];
                         })
                     )
@@ -875,6 +906,7 @@ app.post('/v1/messages', async (req, res) => {
                 }
             }
         }
+        const sessionKey = extractSessionKey(req.body);
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
@@ -915,26 +947,19 @@ app.post('/v1/messages', async (req, res) => {
         ) {
             // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
             requestedModel = 'claude-sonnet-4-6';
-        } else if (requestedModel === 'gemini-3.8-flash-low' || requestedModel === 'flash-low') {
-            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'gemini-3.8-flash-medium' || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
-            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'gemini-3.8-flash-high' || requestedModel === 'gemini-3.8-flash' || requestedModel === 'flash-high') {
-            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel === 'gemini-3.8-flash-tiered') {
-            requestedModel = REROUTE_38_TO_37 ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered';
-        } else if (requestedModel === 'gemini-3.7-flash-low') {
-            requestedModel = 'gemini-3.7-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'gemini-3.7-flash-medium') {
-            requestedModel = 'gemini-3.7-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'gemini-3.7-flash-high' || requestedModel === 'gemini-3.7-flash') {
-            requestedModel = 'gemini-3.7-flash-tiered';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (modelSplitter.isFlashCandidate(requestedModel)) {
+            // Configure thinking budget based on requested thinking variant if not explicitly set
+            if (!req.body.thinking) {
+                if (requestedModel.endsWith('-low') || requestedModel === 'flash-low') {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+                } else if (requestedModel.endsWith('-medium') || requestedModel.endsWith('-med') || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+                } else if (requestedModel.endsWith('-high') || requestedModel === 'gemini-3.8-flash' || requestedModel === 'gemini-3.7-flash' || requestedModel === 'flash-high') {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+                }
+            }
+            // Resolve canonical model with session attachment & weighted split (or reroute38To37 fallback)
+            requestedModel = modelSplitter.resolveModel(requestedModel, sessionKey);
         }
 
         let modelId = requestedModel;
@@ -947,8 +972,11 @@ app.post('/v1/messages', async (req, res) => {
             const valid = await isValidModel(modelId, token, projectId);
 
             if (!valid) {
-                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to gemini-3.8-flash-tiered`);
-                modelId = 'gemini-3.8-flash-tiered';
+                const fallback = isModelSplitEnabled() 
+                    ? modelSplitter.resolveModel('flash', sessionKey)
+                    : (isReroute38To37() ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered');
+                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to ${fallback}`);
+                modelId = fallback;
             }
         }
 

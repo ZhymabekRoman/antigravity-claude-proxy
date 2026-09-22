@@ -735,7 +735,7 @@ async function runTests() {
 
         strategy.selectAccount(accounts, 'model');
         const tracker = strategy.getTokenBucketTracker();
-        assertEqual(tracker.getTokens(accounts[0].email), 9, 'Token should be consumed');
+        assertEqual(Math.round(tracker.getTokens(accounts[0].email)), 9, 'Token should be consumed');
     });
 
     test('HybridStrategy: onSuccess increases health', () => {
@@ -778,7 +778,7 @@ async function runTests() {
         const tokenTracker = strategy.getTokenBucketTracker();
 
         assertEqual(healthTracker.getScore(accounts[0].email), 50, 'Health should decrease by 20');
-        assertEqual(tokenTracker.getTokens(accounts[0].email), tokensBefore + 1, 'Token should be refunded');
+        assertEqual(Math.round(tokenTracker.getTokens(accounts[0].email)), tokensBefore + 1, 'Token should be refunded');
     });
 
     test('HybridStrategy: scoring formula weights work correctly', () => {
@@ -1038,6 +1038,42 @@ async function runTests() {
         // model-b should still use account1
         const resultB = strategy.selectAccount(accounts, 'model-b', { currentIndex: 0 });
         assertEqual(resultB.account.email, 'account1@example.com');
+    });
+
+    test('Integration: BYOK preemptive RPM gating', async () => {
+        const { getByokUsage, recordByokRequest, GEMINI_BYOK_LIMITS } = await import('../src/cloudcode/gemini-byok-streamer.js');
+        // create a dummy subclass to test isAccountUsable
+        class TestStrategy extends BaseStrategy {
+            selectAccount() { return null; }
+        }
+        const testStrat = new TestStrategy();
+        const byokAccount = { email: 'byok-test@example.com', apiKey: 'AIzaSyTestKey' };
+
+        // Initially usable for flash
+        assertTrue(testStrat.isAccountUsable(byokAccount, 'gemini-2.5-flash'));
+
+        // Max out RPM
+        for (let i = 0; i < GEMINI_BYOK_LIMITS.flash.rpm; i++) {
+            recordByokRequest(byokAccount.email);
+        }
+
+        // Now should be preemptively blocked
+        assertFalse(testStrat.isAccountUsable(byokAccount, 'gemini-2.5-flash'), 'BYOK account should be preemptively gated when RPM is full');
+    });
+
+    test('Integration: BYOK model tier affinity in HybridStrategy', () => {
+        const strategy = new HybridStrategy();
+        const byokAccount = { email: 'byok-affinity@example.com', apiKey: 'AIzaSy123', source: 'gemini-byok' };
+        const oauthAccount = { email: 'oauth-user@example.com', refreshToken: '1//refresh' };
+        const accounts = [byokAccount, oauthAccount];
+
+        // For Flash models, BYOK account gets affinity bonus
+        const resultFlash = strategy.selectAccount(accounts, 'gemini-2.5-flash');
+        assertEqual(resultFlash.account.email, byokAccount.email, 'BYOK account should be preferred for Flash models due to affinity bonus');
+
+        // For Pro models, BYOK account gets affinity penalty
+        const resultPro = strategy.selectAccount(accounts, 'gemini-2.5-pro');
+        assertEqual(resultPro.account.email, oauthAccount.email, 'OAuth account should be preferred for Pro models due to BYOK penalty');
     });
 
     // Summary

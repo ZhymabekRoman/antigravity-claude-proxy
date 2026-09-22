@@ -32,6 +32,11 @@ export class QuotaTracker {
      * @returns {number|null} Remaining fraction (0-1) or null if unknown
      */
     getQuotaFraction(account, modelId) {
+        // Accounts using direct Vertex AI route (gcpProject) do not share Cloud Code quota
+        if (account?.gcpProject) {
+            return 1.0;
+        }
+
         // If actively rate limited or in cooldown for this model, treat quota as 0
         if (account?.modelRateLimits?.[modelId]?.isRateLimited && account.modelRateLimits[modelId].resetTime > Date.now()) {
             return 0;
@@ -50,7 +55,10 @@ export class QuotaTracker {
      */
     isQuotaFresh(account) {
         // If account has active rate limit, it is real-time fresh
-        if (!account?.quota?.lastChecked) return true;
+        if (account?.modelRateLimits && Object.values(account.modelRateLimits).some(rl => rl?.isRateLimited && rl.resetTime > Date.now())) {
+            return true;
+        }
+        if (!account?.quota?.lastChecked) return false;
         return (Date.now() - account.quota.lastChecked) < this.#config.staleMs;
     }
 

@@ -9,6 +9,42 @@ import { config } from './config.js';
 import { generateSmartUserAgent, getClientVersion } from './utils/version-detector.js';
 
 /**
+ * Switch to reroute all Gemini 3.8 Flash requests to Gemini 3.7 Flash.
+ * Falls back to config.reroute38To37 if configured.
+ */
+export function isReroute38To37() {
+    return config.reroute38To37 === true;
+}
+export const REROUTE_38_TO_37 = false;
+
+/**
+ * Switch to enable Vertex AI shared & flex request headers:
+ *   X-Vertex-AI-LLM-Request-Type: shared
+ *   X-Vertex-AI-LLM-Shared-Request-Type: flex
+ * Falls back to config.vertexFlexMode if configured.
+ */
+export function isVertexFlexMode() {
+    return config.vertexFlexMode !== false;
+}
+
+/**
+ * Switch to enable session-attached weighted model split (e.g. 60% 3.7 Flash, 40% 3.8 Flash).
+ * When enabled, takes precedence over binary reroute38To37.
+ */
+export function isModelSplitEnabled() {
+    return config.modelSplit?.enabled === true;
+}
+
+/**
+ * Get configured model split weights. Defaults to 60% 3.7 / 40% 3.8.
+ */
+export function getModelSplitWeights() {
+    const w37 = typeof config.modelSplit?.gemini37Weight === 'number' ? config.modelSplit.gemini37Weight : 60;
+    const w38 = typeof config.modelSplit?.gemini38Weight === 'number' ? config.modelSplit.gemini38Weight : 40;
+    return { w37, w38 };
+}
+
+/**
  * Get the Antigravity database path based on the current platform.
  * - macOS: ~/Library/Application Support/Antigravity/...
  * - Windows: ~/AppData/Roaming/Antigravity/...
@@ -285,6 +321,14 @@ export const OAUTH_CONFIG = {
         'openid'
     ]
 };
+
+// Google Cloud (Agent Platform / Vertex) OAuth client config
+export const GCP_OAUTH_CONFIG = {
+    clientId: '884354919052-36trc1jjb3tguiac32ov6cod268c5blh.apps.googleusercontent.com',
+    clientSecret: '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',
+    tokenUrl: 'https://oauth2.googleapis.com/token'
+};
+
 export const OAUTH_REDIRECT_URI = `http://localhost:${OAUTH_CONFIG.callbackPort}/oauth-callback`;
 
 // Minimal Antigravity system instruction (from CLIProxyAPI)
@@ -319,7 +363,7 @@ export const MODEL_FALLBACK_MAP = {
 // Default test models for each family (used by test suite)
 export const TEST_MODELS = {
     claude: 'claude-sonnet-4-6',
-    gemini: 'gemini-3.5-flash-low'
+    gemini: 'gemini-3.8-flash-low'
 };
 
 // Default Claude CLI presets (used by WebUI settings)
@@ -558,6 +602,7 @@ export default {
     getModelFamily,
     isThinkingModel,
     OAUTH_CONFIG,
+    GCP_OAUTH_CONFIG,
     OAUTH_REDIRECT_URI,
     STRATEGY_LABELS,
     MODEL_FALLBACK_MAP,

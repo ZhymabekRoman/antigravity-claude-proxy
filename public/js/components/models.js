@@ -35,6 +35,45 @@ window.Components.models = () => ({
     // Tracks which model rows have their per-account breakdown expanded beyond the cap
     expandedModels: new Set(),
 
+    // Tracks collapsed model groups (default: empty = all expanded)
+    collapsedGroups: {},
+
+    isGroupCollapsed(groupId) {
+        return !!this.collapsedGroups[groupId];
+    },
+
+    toggleGroup(groupId) {
+        this.collapsedGroups = {
+            ...this.collapsedGroups,
+            [groupId]: !this.collapsedGroups[groupId]
+        };
+    },
+
+    collapseAllGroups() {
+        const next = {};
+        const groups = Alpine.store('data')?.groupedQuotaRows || [];
+        groups.forEach(g => { next[g.id] = true; });
+        this.collapsedGroups = next;
+    },
+
+    expandAllGroups() {
+        this.collapsedGroups = {};
+    },
+
+    allGroupsCollapsed() {
+        const groups = Alpine.store('data')?.groupedQuotaRows || [];
+        if (!groups.length) return false;
+        return groups.every(g => this.isGroupCollapsed(g.id));
+    },
+
+    toggleAllGroups() {
+        if (this.allGroupsCollapsed()) {
+            this.expandAllGroups();
+        } else {
+            this.collapseAllGroups();
+        }
+    },
+
     isExpanded(modelId) {
         return this.expandedModels.has(modelId);
     },

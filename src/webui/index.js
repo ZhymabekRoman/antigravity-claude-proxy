@@ -22,6 +22,7 @@ import { logger } from '../utils/logger.js';
 import { getAuthorizationUrl, completeOAuthFlow, startCallbackServer } from '../auth/oauth.js';
 import { loadAccounts, saveAccounts } from '../account-manager/storage.js';
 import { getPackageVersion } from '../utils/helpers.js';
+import { generateUsageReport, formatUsageReportTable, resetByokSpend } from '../modules/byok-accounting.js';
 
 // Get package version
 const packageVersion = getPackageVersion();
@@ -48,6 +49,20 @@ async function setAccountEnabled(email, enabled) {
     account.enabled = enabled;
     await saveAccounts(ACCOUNT_CONFIG_PATH, accounts, settings, activeIndex);
     logger.info(`[WebUI] Account ${email} ${enabled ? 'enabled' : 'disabled'}`);
+}
+
+/**
+ * Set enabled/disabled state for all accounts (or specific list of emails)
+ */
+async function setAllAccountsEnabled(enabled, emails = null) {
+    const { accounts, settings, activeIndex } = await loadAccounts(ACCOUNT_CONFIG_PATH);
+    for (const acc of accounts) {
+        if (!emails || emails.includes(acc.email)) {
+            acc.enabled = enabled;
+        }
+    }
+    await saveAccounts(ACCOUNT_CONFIG_PATH, accounts, settings, activeIndex);
+    logger.info(`[WebUI] All accounts ${enabled ? 'enabled' : 'disabled'}`);
 }
 
 /**
@@ -177,6 +192,24 @@ function validateConfigFields(input) {
     }
     if (typeof switchAccountDelayMs === 'number' && switchAccountDelayMs >= 1000 && switchAccountDelayMs <= 60000) {
         updates.switchAccountDelayMs = switchAccountDelayMs;
+    }
+    if (typeof input.reroute38To37 === 'boolean') {
+        updates.reroute38To37 = input.reroute38To37;
+    }
+    if (typeof input.vertexFlexMode === 'boolean') {
+        updates.vertexFlexMode = input.vertexFlexMode;
+    }
+    if (input.modelSplit && typeof input.modelSplit === 'object') {
+        updates.modelSplit = {};
+        if (typeof input.modelSplit.enabled === 'boolean') {
+            updates.modelSplit.enabled = input.modelSplit.enabled;
+        }
+        if (typeof input.modelSplit.gemini37Weight === 'number' && input.modelSplit.gemini37Weight >= 0 && input.modelSplit.gemini37Weight <= 100) {
+            updates.modelSplit.gemini37Weight = input.modelSplit.gemini37Weight;
+        }
+        if (typeof input.modelSplit.gemini38Weight === 'number' && input.modelSplit.gemini38Weight >= 0 && input.modelSplit.gemini38Weight <= 100) {
+            updates.modelSplit.gemini38Weight = input.modelSplit.gemini38Weight;
+        }
     }
     if (Array.isArray(capacityBackoffTiersMs) && capacityBackoffTiersMs.length >= 1 && capacityBackoffTiersMs.length <= 10) {
         const allValid = capacityBackoffTiersMs.every(v => typeof v === 'number' && v >= 1000 && v <= 300000);
@@ -337,6 +370,31 @@ export function mountWebUI(app, dirname, accountManager) {
     });
 
     /**
+     * POST /api/accounts/toggle-all - Enable/disable all accounts or filtered accounts
+     */
+    app.post('/api/accounts/toggle-all', async (req, res) => {
+        try {
+            const { enabled, emails } = req.body;
+
+            if (typeof enabled !== 'boolean') {
+                return res.status(400).json({ status: 'error', error: 'enabled must be a boolean' });
+            }
+
+            await setAllAccountsEnabled(enabled, Array.isArray(emails) ? emails : null);
+
+            // Reload AccountManager to pick up changes
+            await accountManager.reload();
+
+            res.json({
+                status: 'ok',
+                message: `All accounts ${enabled ? 'enabled' : 'disabled'}`
+            });
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
      * DELETE /api/accounts/:email - Remove account
      */
     app.delete('/api/accounts/:email', async (req, res) => {
@@ -361,7 +419,7 @@ export function mountWebUI(app, dirname, accountManager) {
      */
     app.post('/api/accounts/gemini-byok', async (req, res) => {
         try {
-            const { apiKey, email, mode, description } = req.body;
+            const { apiKey, email, description } = req.body;
             if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 10) {
                 return res.status(400).json({ status: 'error', error: 'Valid Gemini API Key is required' });
             }
@@ -369,7 +427,6 @@ export function mountWebUI(app, dirname, accountManager) {
             const account = await accountManager.addGeminiByokAccount({
                 apiKey: apiKey.trim(),
                 email: email ? email.trim() : `gemini-byok-${Date.now().toString().slice(-4)}`,
-                mode: mode === 'fallback_on_429' ? 'fallback_on_429' : 'default_for_gemini_models',
                 description: description || 'Google AI Studio Key'
             });
 
@@ -389,7 +446,7 @@ export function mountWebUI(app, dirname, accountManager) {
     app.patch('/api/accounts/:email', async (req, res) => {
         try {
             const { email } = req.params;
-            const { quotaThreshold, modelQuotaThresholds, byokApiKey, byokMode } = req.body;
+            const { quotaThreshold, modelQuotaThresholds, byokApiKey, gcpProject, spendCapUsd, resetSpend } = req.body;
 
             const { accounts, settings, activeIndex } = await loadAccounts(ACCOUNT_CONFIG_PATH);
             const account = accounts.find(a => a.email === email);
@@ -398,18 +455,49 @@ export function mountWebUI(app, dirname, accountManager) {
                 return res.status(404).json({ status: 'error', error: `Account ${email} not found` });
             }
 
+            // Reset spend if requested
+            if (resetSpend === true) {
+                resetByokSpend(account);
+                logger.info(`[WebUI] Reset spend for account ${email}`);
+            }
+
+            // Update spendCapUsd if provided (null to remove cap, number >= 0 to set)
+            if (spendCapUsd !== undefined) {
+                if (spendCapUsd === null || spendCapUsd === '') {
+                    delete account.spendCapUsd;
+                } else {
+                    const parsedCap = parseFloat(spendCapUsd);
+                    if (isNaN(parsedCap) || parsedCap < 0) {
+                        return res.status(400).json({ status: 'error', error: 'spendCapUsd must be a positive number or null' });
+                    }
+                    account.spendCapUsd = parsedCap;
+                }
+            }
+
+            // Update Vertex AI GCP project if provided
+            if (gcpProject !== undefined) {
+                if (gcpProject === null || (typeof gcpProject === 'string' && gcpProject.trim() === '')) {
+                    delete account.gcpProject;
+                } else if (typeof gcpProject === 'string' && gcpProject.trim() !== '') {
+                    account.gcpProject = gcpProject.trim();
+                }
+            }
+
             // Update per-account Gemini-BYOK API Key if provided
             if (byokApiKey !== undefined) {
                 if (byokApiKey === null || (typeof byokApiKey === 'string' && byokApiKey.trim() === '')) {
                     delete account.byokApiKey;
                     delete account.byokMode;
+                    delete account.mode;
+                    if (account.source === 'gemini-byok') {
+                        delete account.apiKey;
+                    }
                 } else if (typeof byokApiKey === 'string' && byokApiKey.trim() !== '') {
                     account.byokApiKey = byokApiKey.trim();
-                    account.byokMode = byokMode === 'default_for_gemini_models' ? 'default_for_gemini_models' : 'fallback_on_429';
+                    if (account.source === 'gemini-byok') {
+                        account.apiKey = account.byokApiKey;
+                    }
                 }
-            } else if (byokMode !== undefined && account.byokApiKey) {
-                // If only byokMode is updated without changing the key
-                account.byokMode = byokMode === 'default_for_gemini_models' ? 'default_for_gemini_models' : 'fallback_on_429';
             }
 
             // Validate and update quotaThreshold (0-0.99 or null/undefined to clear)
@@ -438,31 +526,79 @@ export function mountWebUI(app, dirname, accountManager) {
                             });
                         }
                     }
-                    // Replace entire object (not merge)
-                    account.modelQuotaThresholds = { ...modelQuotaThresholds };
+                    account.modelQuotaThresholds = modelQuotaThresholds;
                 } else {
                     return res.status(400).json({ status: 'error', error: 'modelQuotaThresholds must be an object or null' });
                 }
             }
 
             await saveAccounts(ACCOUNT_CONFIG_PATH, accounts, settings, activeIndex);
-
-            // Reload AccountManager to pick up changes
             await accountManager.reload();
 
-            logger.info(`[WebUI] Account ${email} thresholds updated`);
+            logger.info(`[WebUI] Updated thresholds/settings for account ${email}`);
 
             res.json({
                 status: 'ok',
-                message: `Account ${email} thresholds updated`,
                 account: {
                     email: account.email,
+                    gcpProject: account.gcpProject || null,
                     quotaThreshold: account.quotaThreshold,
-                    modelQuotaThresholds: account.modelQuotaThresholds || {}
+                    modelQuotaThresholds: account.modelQuotaThresholds || {},
+                    spendCapUsd: account.spendCapUsd ?? null,
+                    currentSpendUsd: account.currentSpendUsd || 0
                 }
             });
         } catch (error) {
             logger.error('[WebUI] Error updating account thresholds:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * GET /api/reports/usage - Get BYOK usage and dollar spend report
+     * Supports ?format=table for formatted text, default JSON
+     */
+    app.get('/api/reports/usage', async (req, res) => {
+        try {
+            const allAccounts = accountManager.getAllAccounts();
+            const report = generateUsageReport(allAccounts);
+
+            if (req.query.format === 'table') {
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                return res.send(formatUsageReportTable(report));
+            }
+
+            res.json({
+                status: 'ok',
+                report
+            });
+        } catch (error) {
+            logger.error('[WebUI] Error generating usage report:', error);
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * GET /api/accounts/:email/usage-report - Get usage and spend report for a single account
+     */
+    app.get('/api/accounts/:email/usage-report', async (req, res) => {
+        try {
+            const { email } = req.params;
+            const allAccounts = accountManager.getAllAccounts();
+            const account = allAccounts.find(a => a.email === email);
+
+            if (!account) {
+                return res.status(404).json({ status: 'error', error: `Account ${email} not found` });
+            }
+
+            const report = generateUsageReport([account]);
+            res.json({
+                status: 'ok',
+                accountReport: report.accounts[0] || null,
+                pricingReference: report.pricingReference
+            });
+        } catch (error) {
+            logger.error(`[WebUI] Error generating usage report for ${req.params.email}:`, error);
             res.status(500).json({ status: 'error', error: error.message });
         }
     });
@@ -504,6 +640,12 @@ export function mountWebUI(app, dirname, accountManager) {
                     }
                     if (acc.apiKey) {
                         essential.api_key = acc.apiKey;
+                    }
+                    if (acc.gcpProject) {
+                        essential.gcp_project = acc.gcpProject;
+                    }
+                    if (acc.description) {
+                        essential.description = acc.description;
                     }
                     return essential;
                 });
@@ -551,10 +693,12 @@ export function mountWebUI(app, dirname, accountManager) {
                     // Support both snake_case and camelCase
                     const refreshToken = acc.refresh_token || acc.refreshToken;
                     const apiKey = acc.api_key || acc.apiKey;
+                    const gcpProject = acc.gcp_project || acc.gcpProject || acc.gcpProjectId;
+                    const description = acc.description;
 
-                    // Must have at least one credential
-                    if (!refreshToken && !apiKey) {
-                        results.failed.push({ email: acc.email, reason: 'Missing refresh_token or api_key' });
+                    // Must have at least one credential (or gcpProject)
+                    if (!refreshToken && !apiKey && !gcpProject) {
+                        results.failed.push({ email: acc.email, reason: 'Missing refresh_token, api_key, or gcp_project' });
                         continue;
                     }
 
@@ -564,9 +708,11 @@ export function mountWebUI(app, dirname, accountManager) {
                     // Add account
                     await addAccount({
                         email: acc.email,
-                        source: apiKey ? 'manual' : 'oauth',
+                        source: apiKey ? (acc.email.startsWith('gemini-byok') ? 'gemini-byok' : 'manual') : 'oauth',
                         refreshToken: refreshToken,
-                        apiKey: apiKey
+                        apiKey: apiKey,
+                        gcpProject: gcpProject ? gcpProject.trim() : undefined,
+                        description: description
                     });
 
                     if (exists) {

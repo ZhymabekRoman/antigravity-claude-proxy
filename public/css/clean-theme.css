@@ -146,11 +146,13 @@ div.stat:hover,[class*="stat"]:hover{border-color:var(--border-hi)!important;bac
   box-shadow:none!important;
   font-family:var(--mono)!important;
   white-space:nowrap!important;
-  display:inline-flex!important;
   align-items:center!important;
   justify-content:center!important;
   flex-shrink:0!important;
   height:auto!important;
+}
+.badge:not([style*="display: none"]):not([hidden]) {
+  display:inline-flex!important;
 }
 .badge-success,[class*="badge"][class*="green"]{background:var(--ok-dim)!important;border-color:rgba(63,185,80,0.3)!important;color:var(--ok)!important}
 .badge-error,[class*="badge"][class*="red"]{background:var(--err-dim)!important;border-color:rgba(248,81,73,0.3)!important;color:var(--err)!important}

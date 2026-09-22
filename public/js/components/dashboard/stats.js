@@ -95,15 +95,19 @@ window.DashboardStats.updateStats = function(component) {
     };
 
     // Calculate subscription tier distribution
-    const subscription = { ultra: 0, pro: 0, free: 0 };
+    const subscription = { ultra: 0, pro: 0, free: 0, byokFree: 0 };
     enabledAccounts.forEach(acc => {
-        const tier = acc.subscription?.tier || 'free';
-        if (tier === 'ultra') {
-            subscription.ultra++;
-        } else if (tier === 'pro') {
-            subscription.pro++;
+        if (acc.source === 'gemini-byok' || acc.subscription?.tier === 'byok-free') {
+            subscription.byokFree++;
         } else {
-            subscription.free++;
+            const tier = acc.subscription?.tier || 'free';
+            if (tier === 'ultra') {
+                subscription.ultra++;
+            } else if (tier === 'pro') {
+                subscription.pro++;
+            } else {
+                subscription.free++;
+            }
         }
     });
     component.stats.subscription = subscription;

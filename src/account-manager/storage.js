@@ -41,7 +41,11 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
             quota: acc.quota || { models: {}, lastChecked: null },
             // Quota threshold settings (per-account and per-model overrides)
             quotaThreshold: acc.quotaThreshold,  // undefined means use global
-            modelQuotaThresholds: acc.modelQuotaThresholds || {}
+            modelQuotaThresholds: acc.modelQuotaThresholds || {},
+            // BYOK Spend Cap & Accounting
+            spendCapUsd: typeof acc.spendCapUsd === 'number' ? acc.spendCapUsd : (acc.spendCapUsd === null ? null : undefined),
+            currentSpendUsd: typeof acc.currentSpendUsd === 'number' ? acc.currentSpendUsd : 0,
+            spendStats: acc.spendStats || null
         }));
 
         const settings = config.settings || {};
@@ -150,7 +154,10 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
                 authMethod: acc.authMethod || undefined,
                 quota: acc.quota || { models: {}, lastChecked: null },
                 quotaThreshold: acc.quotaThreshold,
-                modelQuotaThresholds: Object.keys(acc.modelQuotaThresholds || {}).length > 0 ? acc.modelQuotaThresholds : undefined
+                modelQuotaThresholds: Object.keys(acc.modelQuotaThresholds || {}).length > 0 ? acc.modelQuotaThresholds : undefined,
+                spendCapUsd: typeof acc.spendCapUsd === 'number' ? acc.spendCapUsd : undefined,
+                currentSpendUsd: typeof acc.currentSpendUsd === 'number' ? acc.currentSpendUsd : undefined,
+                spendStats: acc.spendStats || undefined
             })),
             settings: settings,
             activeIndex: activeIndex

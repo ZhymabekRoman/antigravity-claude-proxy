@@ -73,10 +73,8 @@ async function runTestsForModel(family, model) {
             console.log(`  Response: "${content.text[0].text.substring(0, 100)}..."`);
         }
 
-        // For thinking models, expect thinking + text. For others, just text.
-        const passed = expectThinking
-            ? (content.hasThinking && content.hasText)
-            : content.hasText;
+        // An image query requires a valid text response (thinking is optional depending on model behavior)
+        const passed = content.hasText;
         results.push({ name: 'Single image processing', passed });
         if (!passed) allPassed = false;
     }

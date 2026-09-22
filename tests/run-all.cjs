@@ -10,6 +10,7 @@ const path = require('path');
 
 const tests = [
     { name: 'Account Selection Strategies', file: 'test-strategies.cjs' },
+    { name: 'BYOK Spend Accounting & Reports', file: 'test-byok-accounting.cjs' },
     { name: 'Cache Control Stripping', file: 'test-cache-control.cjs' },
     { name: 'Thinking Signatures', file: 'test-thinking-signatures.cjs' },
     { name: 'Multi-turn Tools (Non-Streaming)', file: 'test-multiturn-thinking-tools.cjs' },
@@ -24,14 +25,17 @@ const tests = [
     { name: 'Streaming Whitespace', file: 'test-streaming-whitespace.cjs' },
     { name: '403 Account Rotation (Unit)', file: 'test-403-account-rotation.cjs' },
     { name: '403 Account Rotation (Integration)', file: 'test-403-integration.cjs' },
-    { name: 'Version Detection', file: 'test-version-detection.js' }
+    { name: 'Version Detection', file: 'test-version-detection.js' },
+    { name: 'Weighted Model Split & TPU Cache', file: 'test-model-splitter.cjs' },
+    { name: 'Thought Signatures (E2E)', file: 'test-thought-signatures-e2e.cjs' }
 ];
 
 async function runTest(test) {
     return new Promise((resolve) => {
         const testPath = path.join(__dirname, test.file);
         const child = spawn('node', [testPath], {
-            stdio: 'inherit'
+            stdio: 'inherit',
+            env: process.env
         });
 
         child.on('close', (code) => {
@@ -46,11 +50,12 @@ async function runTest(test) {
 }
 
 async function main() {
+    const port = process.env.PORT || 8080;
     console.log('╔══════════════════════════════════════════════════════════════╗');
     console.log('║              ANTIGRAVITY PROXY TEST SUITE                    ║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
     console.log('');
-    console.log('Make sure the server is running on port 8080 before running tests.');
+    console.log(`Make sure the server is running on port ${port} before running tests.`);
     console.log('');
 
     // Check if running specific test

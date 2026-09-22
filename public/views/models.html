@@ -104,6 +104,31 @@
                 </svg>
                 <span class="text-[10px] font-medium uppercase tracking-wide" x-text="$store.settings.showAllAccounts ? 'All' : 'Capped'"></span>
             </button>
+
+            <!-- Grouped View Toggle -->
+            <button
+                class="btn h-9 px-4 ml-2 border border-space-border/50 bg-space-800 hover:bg-space-700 hover:border-space-border hover:text-white transition-all gap-2 min-h-0"
+                :class="$store.settings.modelsGroupBy ? 'text-neon-cyan border-neon-cyan/50 bg-neon-cyan/10' : 'text-gray-400'"
+                @click="$store.settings.toggle('modelsGroupBy')"
+                :title="$store.settings.modelsGroupBy ? 'Switch to flat table view' : 'Group models by model groups'">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+                <span class="text-[10px] font-medium uppercase tracking-wide" x-text="$store.settings.modelsGroupBy ? ($store.global.t('modelsGrouped') || 'Grouped') : ($store.global.t('modelsFlat') || 'Flat')"></span>
+            </button>
+
+            <!-- Expand / Collapse All (only visible in grouped mode) -->
+            <button x-show="$store.settings.modelsGroupBy && $store.data.groupedQuotaRows.length > 0"
+                class="btn h-9 px-3 ml-1 border border-space-border/50 bg-space-800 hover:bg-space-700 hover:border-space-border hover:text-white text-gray-400 transition-all gap-1.5 min-h-0"
+                @click="toggleAllGroups()"
+                :title="allGroupsCollapsed() ? 'Expand all groups' : 'Collapse all groups'">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 transition-transform duration-200"
+                    :class="allGroupsCollapsed() ? '-rotate-90' : 'rotate-0'"
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+                <span class="text-[10px] font-medium uppercase tracking-wide" x-text="allGroupsCollapsed() ? ($store.global.t('expandAll') || 'Expand All') : ($store.global.t('collapseAll') || 'Collapse All')"></span>
+            </button>
         </div>
     </div>
 
@@ -162,9 +187,70 @@
 
                 </tr>
             </thead>
-            <tbody class="text-sm">
-                <template x-for="row in $store.data.quotaRows" :key="row.modelId">
-                    <tr class="group transition-all duration-300" :class="row.hidden ? 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0 bg-space-900/50' : ''">
+            <template x-for="group in ($store.settings.modelsGroupBy ? $store.data.groupedQuotaRows : [{ id: 'all', rows: $store.data.quotaRows, flat: true }])" :key="group.id">
+                <tbody class="text-sm">
+                    <!-- Group Header Row (hidden when in flat mode) -->
+                    <tr x-show="!group.flat"
+                        @click="toggleGroup(group.id)"
+                        class="cursor-pointer select-none bg-space-900/90 hover:bg-space-850 border-t border-b border-space-border/80 transition-colors">
+                        <td :colspan="$store.settings.compact ? 4 : 5" class="py-2.5 !pl-3 !pr-4">
+                            <div class="flex items-center justify-between gap-4">
+                                <!-- Left: Chevron, Badge, Group Name, Model Count -->
+                                <div class="flex items-center gap-2.5">
+                                    <!-- Collapse Chevron -->
+                                    <button type="button" class="p-1 -ml-1 text-gray-400 hover:text-white transition-transform duration-200"
+                                        :class="isGroupCollapsed(group.id) ? '-rotate-90 text-gray-500' : 'rotate-0 text-gray-300'"
+                                        :title="isGroupCollapsed(group.id) ? 'Expand group' : 'Collapse group'">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </button>
+
+                                    <!-- Group Badge -->
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider uppercase border"
+                                        :class="{
+                                            'border-neon-purple/40 bg-neon-purple/10 text-neon-purple': group.color === 'purple',
+                                            'border-neon-green/40 bg-neon-green/10 text-neon-green': group.color === 'green',
+                                            'border-neon-cyan/40 bg-neon-cyan/10 text-neon-cyan': group.color === 'cyan',
+                                            'border-neon-yellow/40 bg-neon-yellow/10 text-neon-yellow': group.color === 'yellow',
+                                            'border-blue-500/40 bg-blue-500/10 text-blue-400': group.color === 'blue',
+                                            'border-gray-600/40 bg-gray-800 text-gray-400': group.color === 'gray'
+                                        }"
+                                        x-text="group.badge"></span>
+
+                                    <!-- Group Name -->
+                                    <span class="text-xs font-semibold text-gray-200" x-text="group.name"></span>
+
+                                    <!-- Model count pill -->
+                                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-space-800 text-gray-400 border border-space-border/50"
+                                        x-text="group.rows.length + ' ' + (group.rows.length === 1 ? 'model' : 'models')"></span>
+                                </div>
+
+                                <!-- Right: Group Aggregate Stats (active models, avg quota bar, collapse prompt) -->
+                                <div class="flex items-center gap-3">
+                                    <div class="flex items-center gap-2 text-xs font-mono">
+                                        <span class="text-[10px] text-gray-500 hidden sm:inline"
+                                              x-text="group.activeModels + '/' + group.totalModels + ' available'"></span>
+                                        <div class="w-16 h-1.5 rounded-full bg-space-800 overflow-hidden hidden sm:block">
+                                            <div class="h-full rounded-full transition-all duration-300"
+                                                :class="group.avgQuota > 50 ? 'bg-neon-green' : (group.avgQuota > 0 ? 'bg-yellow-500' : 'bg-red-500')"
+                                                :style="'width: ' + group.avgQuota + '%'"></div>
+                                        </div>
+                                        <span class="text-[11px] font-bold"
+                                            :class="group.avgQuota > 0 ? 'text-gray-300' : 'text-red-400'"
+                                            x-text="'Avg ' + group.avgQuota + '%'"></span>
+                                    </div>
+
+                                    <span class="text-[10px] text-gray-500 hover:text-gray-300">
+                                        <span x-text="isGroupCollapsed(group.id) ? 'Expand' : 'Collapse'"></span>
+                                    </span>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <template x-for="row in group.rows" :key="row.modelId">
+                        <tr x-show="group.flat || !isGroupCollapsed(group.id)" class="group transition-all duration-300" :class="row.hidden ? 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0 bg-space-900/50' : ''">
                         <td class="!pl-4">
                             <div class="w-2 h-2 rounded-full transition-all duration-500"
                                 :class="row.avgQuota > 0 ? 'bg-neon-green shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'">
@@ -350,42 +436,46 @@
                         </td>
                     </tr>
                 </template>
-                <!-- Loading -->
-                <tr x-show="$store.data.loading && !$store.data.quotaRows.length">
-                    <td :colspan="$store.settings.compact ? 4 : 6" class="h-64 text-center">
-                        <div class="flex flex-col items-center justify-center gap-3">
-                            <span class="loading loading-bars loading-md text-neon-purple"></span>
-                            <span class="text-xs font-mono text-gray-600 animate-pulse"
-                                x-text="$store.global.t('establishingUplink')">ESTABLISHING
-                                UPLINK...</span>
-                        </div>
-                    </td>
-                </tr>
-                <!-- Empty State -->
-                <tr x-show="!$store.data.initialLoad && $store.data.quotaRows.length === 0">
-                    <td :colspan="$store.settings.compact ? 4 : 6" class="py-16 text-center">
-                        <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
-                            <svg class="w-20 h-20 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                      d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                            </svg>
-                            <h3 class="text-xl font-semibold text-gray-400" x-text="$store.global.t('noSignal')">
-                                NO SIGNAL DETECTED
-                            </h3>
-                            <p class="text-sm text-gray-600 max-w-md leading-relaxed">
-                                No model data available. Add accounts to see available models and quota information.
-                            </p>
-                            <button class="btn bg-neon-purple hover:bg-purple-600 border-none text-white btn-sm gap-2 shadow-lg shadow-neon-purple/20"
-                                @click="$store.global.activeTab = 'accounts'">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                </svg>
-                                <span x-text="$store.global.t('goToAccounts')">Go to Accounts</span>
-                            </button>
-                        </div>
-                    </td>
-                </tr>
             </tbody>
+        </template>
+        <!-- Loading and Empty State -->
+        <tbody class="text-sm" x-show="($store.data.loading && !$store.data.quotaRows.length) || (!$store.data.initialLoad && $store.data.quotaRows.length === 0)">
+            <!-- Loading -->
+            <tr x-show="$store.data.loading && !$store.data.quotaRows.length">
+                <td :colspan="$store.settings.compact ? 4 : 5" class="h-64 text-center">
+                    <div class="flex flex-col items-center justify-center gap-3">
+                        <span class="loading loading-bars loading-md text-neon-purple"></span>
+                        <span class="text-xs font-mono text-gray-600 animate-pulse"
+                            x-text="$store.global.t('establishingUplink')">ESTABLISHING
+                            UPLINK...</span>
+                    </div>
+                </td>
+            </tr>
+            <!-- Empty State -->
+            <tr x-show="!$store.data.initialLoad && $store.data.quotaRows.length === 0">
+                <td :colspan="$store.settings.compact ? 4 : 5" class="py-16 text-center">
+                    <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
+                        <svg class="w-20 h-20 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                  d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                        </svg>
+                        <h3 class="text-xl font-semibold text-gray-400" x-text="$store.global.t('noSignal')">
+                            NO SIGNAL DETECTED
+                        </h3>
+                        <p class="text-sm text-gray-600 max-w-md leading-relaxed">
+                            No model data available. Add accounts to see available models and quota information.
+                        </p>
+                        <button class="btn bg-neon-purple hover:bg-purple-600 border-none text-white btn-sm gap-2 shadow-lg shadow-neon-purple/20"
+                            @click="$store.global.activeTab = 'accounts'">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                            </svg>
+                            <span x-text="$store.global.t('goToAccounts')">Go to Accounts</span>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        </tbody>
         </table>
     </div>
 </div>

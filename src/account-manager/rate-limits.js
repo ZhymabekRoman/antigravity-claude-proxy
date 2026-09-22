@@ -23,6 +23,7 @@ export function isAllRateLimited(accounts, modelId) {
     return accounts.every(acc => {
         if (acc.isInvalid) return true; // Invalid accounts count as unavailable
         if (acc.enabled === false) return true; // Disabled accounts count as unavailable
+        if (acc.gcpProject) return false; // Vertex accounts are not bounded by CloudCode rate limits
         const modelLimits = acc.modelRateLimits || {};
         const limit = modelLimits[modelId];
         return limit && limit.isRateLimited && limit.resetTime > Date.now();
@@ -40,22 +41,18 @@ export function getAvailableAccounts(accounts, modelId = null) {
     return accounts.filter(acc => {
         if (acc.isInvalid) return false;
 
-        // Skip gemini-byok accounts from standard Cloud Code OAuth pool
-        if (acc.source === 'gemini-byok') return false;
-
         // WebUI: Skip disabled accounts
         if (acc.enabled === false) return false;
+
+        // For accounts routing directly via Vertex AI (gcpProject), Cloud Code rate limits do not apply
+        if (acc.gcpProject) {
+            return true;
+        }
 
         if (modelId && acc.modelRateLimits && acc.modelRateLimits[modelId]) {
             const limit = acc.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                const quotaInfo = acc.quota?.models?.[modelId];
-                if (quotaInfo && quotaInfo.remainingFraction > 0) {
-                    limit.isRateLimited = false;
-                    limit.resetTime = null;
-                } else {
-                    return false;
-                }
+                return false;
             }
         }
 

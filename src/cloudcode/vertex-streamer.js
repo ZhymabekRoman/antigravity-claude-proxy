@@ -19,13 +19,75 @@
  * the existing streamSSEResponse / parseGoogleContinuationStream parsers.
  */
 
-import { convertAnthropicToGoogle } from '../format/index.js';
+import { convertAnthropicToGoogle, sanitizeThoughtSignatures } from '../format/index.js';
 import { streamSSEResponse, parseGoogleContinuationStream } from './sse-streamer.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
 import { throttledFetch } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
-import { deriveSessionId } from './session-manager.js';
+import { deriveSessionId, sessionRouter, extractSessionKey } from './session-manager.js';
+import { GEMINI_SKIP_SIGNATURE, isModelSplitEnabled, isReroute38To37, isVertexFlexMode } from '../constants.js';
+import { recordByokSpend } from '../modules/byok-accounting.js';
 import crypto from 'crypto';
+
+/**
+ * Execute a fetch to Vertex AI with automatic retry on 400 "Invalid thought signature".
+ * If Vertex rejects signatures, all signatures are sanitized to GEMINI_SKIP_SIGNATURE and retried once.
+ *
+ * @param {string} url - Vertex AI endpoint URL
+ * @param {Object} headers - Request headers
+ * @param {Object} payload - Vertex AI request payload
+ * @param {string} accountEmail - Account email for logging
+ * @returns {Promise<{response: Response, ttfbMs: number}>}
+ */
+async function fetchWithSignatureRetry(url, headers, payload, accountEmail) {
+    let bodyStr = JSON.stringify(payload);
+    const tFetch = Date.now();
+    let response = await throttledFetch(url, { method: 'POST', headers, body: bodyStr });
+    let ttfbMs = Date.now() - tFetch;
+
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        if (response.status === 400 && errorText.includes('thought signature')) {
+            logger.warn(`[Vertex] ⚠️ "Invalid thought signature" received for ${accountEmail}. Retrying with sanitized skip signatures...`);
+            const sanitizedPayload = sanitizeThoughtSignatures(payload);
+            const tRetry = Date.now();
+            response = await throttledFetch(url, { method: 'POST', headers, body: JSON.stringify(sanitizedPayload) });
+            ttfbMs = Date.now() - tRetry;
+            if (!response.ok) {
+                const retryErrorText = await response.text().catch(() => '');
+                logger.error(`[Vertex] Retry HTTP ${response.status} for ${accountEmail}: ${retryErrorText.slice(0, 300)}`);
+                const err = new Error(`Vertex Error (${response.status}): ${retryErrorText.slice(0, 200)}`);
+                err.status = response.status;
+                err.body = retryErrorText;
+                throw err;
+            }
+        } else if (response.status === 400 && errorText.includes('Flex API is not supported')) {
+            logger.warn(`[Vertex] ⚠️ Flex API not supported for this model on ${accountEmail}. Retrying without flex headers...`);
+            const retryHeaders = { ...headers };
+            delete retryHeaders['X-Vertex-AI-LLM-Request-Type'];
+            delete retryHeaders['X-Vertex-AI-LLM-Shared-Request-Type'];
+            const tRetry = Date.now();
+            response = await throttledFetch(url, { method: 'POST', headers: retryHeaders, body: bodyStr });
+            ttfbMs = Date.now() - tRetry;
+            if (!response.ok) {
+                const retryErrorText = await response.text().catch(() => '');
+                logger.error(`[Vertex] Retry HTTP ${response.status} for ${accountEmail}: ${retryErrorText.slice(0, 300)}`);
+                const err = new Error(`Vertex Error (${response.status}): ${retryErrorText.slice(0, 200)}`);
+                err.status = response.status;
+                err.body = retryErrorText;
+                throw err;
+            }
+        } else {
+            logger.error(`[Vertex] HTTP ${response.status} for ${accountEmail}: ${errorText.slice(0, 300)}`);
+            const err = new Error(`Vertex Error (${response.status}): ${errorText.slice(0, 200)}`);
+            err.status = response.status;
+            err.body = errorText;
+            throw err;
+        }
+    }
+
+    return { response, ttfbMs };
+}
 
 const VERTEX_BASE = 'https://aiplatform.googleapis.com/v1';
 const VERTEX_LOCATION = 'global';
@@ -42,7 +104,7 @@ export function mapToVertexModel(model) {
     const m = model.toLowerCase();
 
     // Strip tiered/high/medium/low suffixes
-    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return 'gemini-3.8-flash';
+    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return (!isModelSplitEnabled() && isReroute38To37()) ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
     if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
     if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
     if (m.includes('3.5-flash') || m.includes('3-5-flash')) return 'gemini-3.5-flash';
@@ -73,6 +135,30 @@ export function buildVertexUrl(gcpProject, vertexModel) {
 }
 
 /**
+ * Build headers for a Vertex AI REST request.
+ *
+ * @param {string} token - OAuth2 Bearer token
+ * @param {string} accountEmail - For throttle key
+ * @returns {Object}
+ */
+export function buildVertexHeaders(token, accountEmail) {
+    const headers = {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'antigravity/cli/1.1.23 (aidev_client; os_type=linux; arch=amd64; auth_method=gcp)',
+        // Internal pacer key — stripped by throttledFetch before sending to Google
+        'x-account-key': accountEmail,
+    };
+
+    if (isVertexFlexMode()) {
+        headers['X-Vertex-AI-LLM-Request-Type'] = 'shared';
+        headers['X-Vertex-AI-LLM-Shared-Request-Type'] = 'flex';
+    }
+
+    return headers;
+}
+
+/**
  * Build Vertex AI request payload from an Anthropic-format request.
  * The format is identical to Google AI Studio (no project/wrapper fields).
  *
@@ -97,22 +183,6 @@ export function buildVertexRequest(anthropicRequest, accountEmail) {
     return googleRequest;
 }
 
-/**
- * Build headers for a Vertex AI REST request.
- *
- * @param {string} token - OAuth2 Bearer token
- * @param {string} accountEmail - For throttle key
- * @returns {Object}
- */
-export function buildVertexHeaders(token, accountEmail) {
-    return {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'antigravity/cli/1.1.23 (aidev_client; os_type=linux; arch=amd64; auth_method=gcp)',
-        // Internal pacer key — stripped by throttledFetch before sending to Google
-        'x-account-key': accountEmail,
-    };
-}
 
 /**
  * Stream a message via Vertex AI (Antigravity Business endpoint).
@@ -120,10 +190,13 @@ export function buildVertexHeaders(token, accountEmail) {
  * @param {Object} anthropicRequest - Anthropic-format request
  * @param {string} token - OAuth2 Bearer token for the account
  * @param {string} gcpProject - GCP project ID
- * @param {string} accountEmail - Account email (for logging + session ID)
+ * @param {Object|string} account - Account object or email
+ * @param {Object} [accountManager] - AccountManager instance
  * @yields {Object} Anthropic SSE events
  */
-export async function* streamVertex(anthropicRequest, token, gcpProject, accountEmail) {
+export async function* streamVertex(anthropicRequest, token, gcpProject, account, accountManager = null) {
+    const accountEmail = typeof account === 'string' ? account : account?.email;
+    const accountObj   = typeof account === 'object' ? account : null;
     const originalModel = anthropicRequest.model;
     const vertexModel   = mapToVertexModel(originalModel);
     const url           = buildVertexUrl(gcpProject, vertexModel);
@@ -131,24 +204,9 @@ export async function* streamVertex(anthropicRequest, token, gcpProject, account
     const headers       = buildVertexHeaders(token, accountEmail);
     const bodyStr       = JSON.stringify(payload);
 
-    logger.info(`[Vertex] 🚀 Dispatching stream → ${url.split('?')[0]} (account: ${accountEmail}, model: ${vertexModel}) bodySize=${bodyStr.length}`);
+    logger.info(`[Vertex] 🚀 Dispatching stream → ${url.split('?')[0]} (account: ${accountEmail}, model: ${vertexModel})`);
 
-    const tFetch = Date.now();
-    const response = await throttledFetch(url, {
-        method: 'POST',
-        headers,
-        body: bodyStr,
-    });
-    const ttfbMs = Date.now() - tFetch;
-
-    if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        logger.error(`[Vertex] HTTP ${response.status} for ${accountEmail}: ${errorText.slice(0, 300)}`);
-        const err = new Error(`Vertex Error (${response.status}): ${errorText.slice(0, 200)}`);
-        err.status = response.status;
-        err.body   = errorText;
-        throw err;
-    }
+    const { response, ttfbMs } = await fetchWithSignatureRetry(url, headers, payload, accountEmail);
 
     logger.info(`[PERF][Vertex] ⚡ TTFB=${ttfbMs}ms account=${accountEmail} model=${vertexModel}${ttfbMs > 3000 ? ' ⚠️ SLOW_TTFB' : ''}`);
 
@@ -182,7 +240,16 @@ export async function* streamVertex(anthropicRequest, token, gcpProject, account
         }
     };
 
-    yield* streamSSEResponse(response, originalModel, onThoughtOnly);
+    for await (const event of streamSSEResponse(response, originalModel, onThoughtOnly)) {
+        if (event.type === 'message_delta' && event.usage) {
+            if (accountObj) {
+                recordByokSpend(accountObj, originalModel, event.usage, accountManager);
+            }
+            const sessionKey = extractSessionKey(anthropicRequest);
+            sessionRouter.recordSessionUsage(sessionKey, event.usage);
+        }
+        yield event;
+    }
 }
 
 /**
@@ -191,10 +258,13 @@ export async function* streamVertex(anthropicRequest, token, gcpProject, account
  * @param {Object} anthropicRequest - Anthropic-format request
  * @param {string} token - OAuth2 Bearer token
  * @param {string} gcpProject - GCP project ID
- * @param {string} accountEmail - Account email
+ * @param {Object|string} account - Account object or email
+ * @param {Object} [accountManager] - AccountManager instance
  * @returns {Promise<Object>} Anthropic-format response
  */
-export async function sendVertexMessage(anthropicRequest, token, gcpProject, accountEmail) {
+export async function sendVertexMessage(anthropicRequest, token, gcpProject, account, accountManager = null) {
+    const accountEmail = typeof account === 'string' ? account : account?.email;
+    const accountObj   = typeof account === 'object' ? account : null;
     const originalModel = anthropicRequest.model;
     const vertexModel   = mapToVertexModel(originalModel);
     const url           = buildVertexUrl(gcpProject, vertexModel);
@@ -203,20 +273,11 @@ export async function sendVertexMessage(anthropicRequest, token, gcpProject, acc
 
     logger.info(`[Vertex] 🚀 Dispatching non-stream → ${url.split('?')[0]} (account: ${accountEmail}, model: ${vertexModel})`);
 
-    const response = await throttledFetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-    });
+    const { response } = await fetchWithSignatureRetry(url, headers, payload, accountEmail);
 
-    if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        logger.error(`[Vertex] HTTP ${response.status} for ${accountEmail}: ${errorText.slice(0, 300)}`);
-        const err = new Error(`Vertex Error (${response.status}): ${errorText.slice(0, 200)}`);
-        err.status = response.status;
-        err.body   = errorText;
-        throw err;
+    const result = await parseThinkingSSEResponse(response, originalModel);
+    if (result && result.usage && accountObj) {
+        recordByokSpend(accountObj, originalModel, result.usage, accountManager);
     }
-
-    return await parseThinkingSSEResponse(response, originalModel);
+    return result;
 }

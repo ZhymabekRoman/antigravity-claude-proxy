@@ -41,6 +41,7 @@ import crypto from 'crypto';
 
 import { streamGeminiByok } from './gemini-byok-streamer.js';
 import { streamVertex, mapToVertexModel } from './vertex-streamer.js';
+import { sanitizeThoughtSignatures } from '../format/index.js';
 
 /**
  * Send a streaming request to Cloud Code with multi-account support
@@ -73,13 +74,6 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
         }
     }
 
-    // Check if model is a Gemini model and a gemini-byok default account is configured
-    const byokDefault = accountManager.getGeminiByokDefaultAccount?.(model);
-    if (byokDefault) {
-        yield* streamGeminiByok(anthropicRequest, byokDefault);
-        return;
-    }
-
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
     const maxAttempts = MAX_RETRIES;
@@ -97,14 +91,6 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         // If no accounts available, check if we should wait or throw error
         if (availableAccounts.length === 0) {
-            // Check for Gemini-BYOK fallback account
-            const byokFallback = accountManager.getGeminiByokFallbackAccount?.();
-            if (byokFallback) {
-                logger.info(`[CloudCode] 🔀 All Cloud Code accounts unavailable for ${model}, routing to Gemini-BYOK key`);
-                yield* streamGeminiByok(anthropicRequest, byokFallback);
-                return;
-            }
-
             // All accounts invalid? Fail immediately — they need user intervention (WebUI FIX button)
             if (accountManager.isAllAccountsInvalid()) {
                 const invalidAccounts = accountManager.getInvalidAccounts();
@@ -185,15 +171,16 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         logger.info(`[CloudCode] 🎯 Attempt ${attempt + 1}/${maxAttempts} for ${model} -> selected account: ${account.email} (pinned: ${account === pinnedAccount})`);
 
-        // Check for Account-level Gemini-BYOK key with default routing for Gemini models
-        const isGeminiModel = model.toLowerCase().startsWith('gemini') || model.toLowerCase().includes('flash') || model.toLowerCase().includes('pro');
-        if (account.byokApiKey && account.byokMode === 'default_for_gemini_models' && isGeminiModel) {
-            logger.info(`[CloudCode] 🔑 Executing ${model} via ${account.email}'s attached Gemini-BYOK key`);
-            yield* streamGeminiByok(anthropicRequest, { apiKey: account.byokApiKey });
-            return;
-        }
-
         try {
+            // ── Gemini-BYOK direct execution ──────────────────────────
+            if (account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken)) {
+                logger.info(`[Gemini-BYOK] 🔑 Routing via Google AI Studio Key for ${account.email}`);
+                yield* streamGeminiByok(anthropicRequest, account, accountManager);
+                clearRateLimitState(account.email, model);
+                accountManager.notifySuccess(account, model);
+                return;
+            }
+
             // ── PROFILING: token fetch ──────────────────────────────────────────
             const t0 = Date.now();
             const token = await accountManager.getTokenForAccount(account);
@@ -209,7 +196,9 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
             if (gcpProject) {
                 logger.info(`[Vertex] 🎯 Routing via Vertex AI for ${account.email} (project: ${gcpProject}, token: ${tokenMs}ms)`);
-                yield* streamVertex(anthropicRequest, token, gcpProject, account.email);
+                yield* streamVertex(anthropicRequest, token, gcpProject, account, accountManager);
+                clearRateLimitState(account.email, model);
+                accountManager.notifySuccess(account, model);
                 return;
             }
 
@@ -410,8 +399,10 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                         // 400 errors are client errors - fail immediately, don't retry or switch accounts
                         // Examples: token limit exceeded, invalid schema, malformed request
-                        // EXCEPTION: "User location is not supported" is a geo-restriction on the *model*,
+                        // EXCEPTION 1: "User location is not supported" is a geo-restriction on the *model*,
                         // not a malformed request. Auto-fallback to 3.7 which has broader geo support.
+                        // EXCEPTION 2: "thought signature" / "Corrupted thought signature" happens when switching
+                        // accounts/backends across turns with mismatched signatures. Sanitize and retry immediately.
                         if (response.status === 400) {
                             if (errorText.includes('User location is not supported')) {
                                 const fallbackModel = getFallbackModel(model);
@@ -419,6 +410,12 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 const geoFallbackRequest = { ...anthropicRequest, model: fallbackModel };
                                 yield* sendMessageStream(geoFallbackRequest, accountManager, true);
                                 return;
+                            }
+                            if (errorText.toLowerCase().includes('thought signature')) {
+                                logger.warn(`[CloudCode] ⚠️ "Corrupted/Invalid thought signature" received for ${account.email}. Retrying with sanitized skip signatures...`);
+                                sanitizeThoughtSignatures(payload);
+                                // Retry immediately against the current endpoint with sanitized payload
+                                continue;
                             }
                             logger.error(`[CloudCode] Invalid request (400): ${errorText.substring(0, 200)}`);
                             throw new Error(`invalid_request_error: ${errorText}`);
@@ -567,6 +564,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     if (u.output_tokens) {
                                         outputTokens = u.output_tokens;
                                     }
+                                    sessionRouter.recordSessionUsage(sessionKey, u);
                                 }
                                 yield event;
                             }
@@ -698,13 +696,9 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             }
 
         } catch (error) {
-            // Check for Account-level Gemini-BYOK key fallback on rate limit or quota exhaustion
-            if (account.byokApiKey && (isRateLimitError(error) || error.message?.includes('RESOURCE_EXHAUSTED') || error.message?.includes('QUOTA_EXHAUSTED') || isAccountForbiddenError(error))) {
-                logger.info(`[CloudCode] 🔀 Account ${account.email} hit limit, executing fallback via account's attached Gemini-BYOK key`);
-                yield* streamGeminiByok(anthropicRequest, { apiKey: account.byokApiKey });
-                return;
+            if (sessionKey) {
+                sessionRouter.unbindSession(sessionKey);
             }
-
             if (isRateLimitError(error)) {
                 // Rate limited - already marked, notify strategy and continue to next account
                 accountManager.notifyRateLimit(account, model);

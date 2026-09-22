@@ -114,6 +114,8 @@ export class AccountManager {
     async syncAccountQuotas() {
         const enabledAccounts = this.#accounts.filter(a => a.enabled !== false && !a.isInvalid);
         for (const account of enabledAccounts) {
+            // Vertex accounts use Pay-As-You-Go with GCP projects and do not use CloudCode free quotas
+            if (account.gcpProject) continue;
             try {
                 const token = await this.getTokenForAccount(account);
                 const projectId = account.subscription?.projectId || null;
@@ -507,14 +509,15 @@ export class AccountManager {
             accounts: this.#accounts.map(a => ({
                 email: a.email,
                 source: a.source,
-                mode: a.mode || null,
+                mode: a.mode || a.byokMode || null,
                 description: a.description || null,
-                hasByokKey: !!a.byokApiKey,
-                byokApiKey: a.byokApiKey || null,
-                apiKey: a.apiKey || null,
-                byokMode: a.byokMode || null,
+                hasByokKey: !!(a.byokApiKey || (a.source === 'gemini-byok' && a.apiKey)),
+                byokApiKey: a.byokApiKey || (a.source === 'gemini-byok' ? a.apiKey : null),
+                apiKey: a.apiKey || a.byokApiKey || null,
+                byokMode: a.byokMode || a.mode || null,
                 enabled: a.enabled !== false,  // Default to true if undefined
                 projectId: a.projectId || null,
+                gcpProject: a.gcpProject || null,
                 modelRateLimits: a.modelRateLimits || {},
                 isInvalid: a.isInvalid || false,
                 invalidReason: a.invalidReason || null,
@@ -522,58 +525,21 @@ export class AccountManager {
                 lastUsed: a.lastUsed,
                 // Include quota threshold settings
                 quotaThreshold: a.quotaThreshold,
-                modelQuotaThresholds: a.modelQuotaThresholds || {}
+                modelQuotaThresholds: a.modelQuotaThresholds || {},
+                // BYOK spend cap & cost tracking
+                spendCapUsd: typeof a.spendCapUsd === 'number' ? a.spendCapUsd : null,
+                currentSpendUsd: typeof a.currentSpendUsd === 'number' ? a.currentSpendUsd : 0,
+                isSpendCapped: typeof a.spendCapUsd === 'number' && a.spendCapUsd > 0 && (a.currentSpendUsd || 0) >= a.spendCapUsd,
+                spendStats: a.spendStats || null
             }))
         };
     }
 
     /**
-     * Get Gemini-BYOK account if configured as default for Gemini models
-     * @param {string} model - Requested model name
-     * @returns {Object|null} Gemini-BYOK account or null
-     */
-    getGeminiByokDefaultAccount(model) {
-        if (!model) return null;
-        const m = model.toLowerCase();
-        const isGemini = m.startsWith('gemini') || m.includes('flash') || m.includes('pro') || m.includes('claude');
-        if (!isGemini) return null;
-
-        const acc = this.#accounts.find(a => 
-            a.enabled !== false && 
-            (a.mode === 'default_for_gemini_models' || a.byokMode === 'default_for_gemini_models') &&
-            (a.apiKey || a.byokApiKey)
-        );
-
-        if (!acc) return null;
-        return {
-            ...acc,
-            apiKey: acc.apiKey || acc.byokApiKey
-        };
-    }
-
-    /**
-     * Get Gemini-BYOK fallback account on 429 exhaustion or when all accounts are unavailable
-     * @returns {Object|null} Gemini-BYOK account or null
-     */
-    getGeminiByokFallbackAccount() {
-        const acc = this.#accounts.find(a => 
-            a.enabled !== false && 
-            (a.source === 'gemini-byok' || a.byokApiKey || a.apiKey) &&
-            (a.apiKey || a.byokApiKey)
-        );
-
-        if (!acc) return null;
-        return {
-            ...acc,
-            apiKey: acc.apiKey || acc.byokApiKey
-        };
-    }
-
-    /**
      * Add or update a Gemini-BYOK account
-     * @param {Object} byokConfig - { apiKey, email, mode, description }
+     * @param {Object} byokConfig - { apiKey, email, description }
      */
-    async addGeminiByokAccount({ apiKey, email, mode = 'default_for_gemini_models', description = '' }) {
+    async addGeminiByokAccount({ apiKey, email, description = '' }) {
         const id = email || `gemini-byok-${Date.now().toString().slice(-4)}`;
         const existingIdx = this.#accounts.findIndex(a => a.email === id || (a.source === 'gemini-byok' && a.apiKey === apiKey));
         
@@ -581,7 +547,7 @@ export class AccountManager {
             email: id,
             source: 'gemini-byok',
             apiKey,
-            mode: mode || 'default_for_gemini_models',
+            byokApiKey: apiKey,
             description: description || 'Google AI Studio Key',
             enabled: true,
             createdAt: Date.now()
@@ -594,7 +560,7 @@ export class AccountManager {
         }
 
         await this.saveToDisk();
-        logger.info(`[AccountManager] Added/Updated Gemini-BYOK account: ${id} (${mode})`);
+        logger.info(`[AccountManager] Added/Updated Gemini-BYOK account: ${id}`);
         return byokAccount;
     }
 

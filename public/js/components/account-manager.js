@@ -34,8 +34,23 @@ window.Components.accountManager = () => ({
         return accounts.filter(acc => {
             return acc.email.toLowerCase().includes(query) ||
                    (acc.projectId && acc.projectId.toLowerCase().includes(query)) ||
+                   (acc.gcpProject && acc.gcpProject.toLowerCase().includes(query)) ||
+                   (query.includes('vertex') && !!acc.gcpProject) ||
                    (acc.source && acc.source.toLowerCase().includes(query));
         });
+    },
+
+    get allEnabled() {
+        const accounts = this.filteredAccounts;
+        if (!accounts || accounts.length === 0) return false;
+        return accounts.every(a => a.enabled !== false);
+    },
+
+    get isIndeterminate() {
+        const accounts = this.filteredAccounts;
+        if (!accounts || accounts.length === 0) return false;
+        const enabledCount = accounts.filter(a => a.enabled !== false).length;
+        return enabledCount > 0 && enabledCount < accounts.length;
     },
 
     formatEmail(email) {
@@ -112,6 +127,47 @@ window.Components.accountManager = () => ({
             if (account) {
                 account.enabled = !enabled;
             }
+            await dataStore.fetchData();
+        }
+    },
+
+    async toggleAllAccounts(enabled) {
+        const store = Alpine.store('global');
+        const password = store.webuiPassword;
+        const dataStore = Alpine.store('data');
+        const targetAccounts = this.filteredAccounts;
+        if (!targetAccounts || targetAccounts.length === 0) return;
+
+        const emails = targetAccounts.map(a => a.email);
+        const previousStates = new Map(dataStore.accounts.map(a => [a.email, a.enabled !== false]));
+
+        // Optimistic update
+        targetAccounts.forEach(a => { a.enabled = enabled; });
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/accounts/toggle-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled, emails })
+            }, password);
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                store.showToast(enabled ? 'All accounts enabled' : 'All accounts disabled', 'success');
+                await dataStore.fetchData();
+            } else {
+                store.showToast(data.error || store.t('toggleFailed'), 'error');
+                dataStore.accounts.forEach(a => {
+                    if (previousStates.has(a.email)) a.enabled = previousStates.get(a.email);
+                });
+                await dataStore.fetchData();
+            }
+        } catch (e) {
+            store.showToast(store.t('toggleFailed') + ': ' + e.message, 'error');
+            dataStore.accounts.forEach(a => {
+                if (previousStates.has(a.email)) a.enabled = previousStates.get(a.email);
+            });
             await dataStore.fetchData();
         }
     },
@@ -202,9 +258,84 @@ window.Components.accountManager = () => ({
     },
 
     // Threshold settings
+    // Usage Report modal state
+    usageReport: null,
+    usageReportLoading: false,
+
+    async openUsageReport() {
+        this.usageReportLoading = true;
+        try {
+            const store = Alpine.store('global');
+            const { response, newPassword } = await window.utils.request(
+                '/api/reports/usage',
+                {},
+                store.webuiPassword
+            );
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                this.usageReport = data.report;
+                const modal = document.getElementById('usage_report_modal');
+                if (modal) modal.showModal();
+            } else {
+                store.showToast(data.error || 'Failed to load usage report', 'error');
+            }
+        } catch (e) {
+            Alpine.store('global').showToast('Error loading usage report: ' + e.message, 'error');
+        } finally {
+            this.usageReportLoading = false;
+        }
+    },
+
+    async resetAccountSpend(email) {
+        if (!confirm(`Reset accumulated spend and usage statistics for ${email}?`)) {
+            return;
+        }
+        try {
+            const store = Alpine.store('global');
+            const { response, newPassword } = await window.utils.request(
+                `/api/accounts/${encodeURIComponent(email)}`,
+                {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ resetSpend: true })
+                },
+                store.webuiPassword
+            );
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                store.showToast('Spend counter reset to $0.00', 'success');
+                if (this.thresholdDialog.email === email) {
+                    this.thresholdDialog.currentSpendUsd = 0;
+                }
+                await Alpine.store('data').fetchData();
+                // If usage report is currently open, refresh it
+                if (this.usageReport) {
+                    await this.openUsageReport();
+                }
+            } else {
+                store.showToast(data.error || 'Failed to reset spend', 'error');
+            }
+        } catch (e) {
+            Alpine.store('global').showToast('Failed to reset spend: ' + e.message, 'error');
+        }
+    },
+
     thresholdDialog: {
         email: '',
-        quotaThreshold: null,  // null means use global
+        hasByokKey: false,
+        byokApiKey: '',
+        originalKey: '',
+        gcpProject: '',
+        originalGcpProject: '',
+        showKey: true,
+        removeByokKey: false,
+        spendCapUsd: null,
+        currentSpendUsd: 0,
+        quotaThreshold: null,
         modelQuotaThresholds: {},
         saving: false,
         addingModel: false,
@@ -213,15 +344,18 @@ window.Components.accountManager = () => ({
     },
 
     openThresholdModal(account) {
-        const rawKey = account.byokApiKey || '';
+        const rawKey = account.byokApiKey || account.apiKey || '';
         this.thresholdDialog = {
             email: account.email,
             hasByokKey: !!(rawKey || account.hasByokKey),
             byokApiKey: rawKey,
             originalKey: rawKey,
+            gcpProject: account.gcpProject || '',
+            originalGcpProject: account.gcpProject || '',
             showKey: true,
-            byokMode: account.byokMode || 'fallback_on_429',
             removeByokKey: false,
+            spendCapUsd: typeof account.spendCapUsd === 'number' ? account.spendCapUsd : null,
+            currentSpendUsd: account.currentSpendUsd || 0,
             // Convert from fraction (0-1) to percentage (0-99) for display
             quotaThreshold: account.quotaThreshold !== undefined ? Math.round(account.quotaThreshold * 100) : null,
             modelQuotaThresholds: Object.fromEntries(
@@ -251,10 +385,16 @@ window.Components.accountManager = () => ({
                 modelQuotaThresholds[modelId] = parseFloat(pct) / 100;
             }
 
+            const currentGcpProject = (this.thresholdDialog.gcpProject || '').trim();
+            const spendCap = this.thresholdDialog.spendCapUsd !== null && this.thresholdDialog.spendCapUsd !== ''
+                ? parseFloat(this.thresholdDialog.spendCapUsd)
+                : null;
+
             const payload = {
                 quotaThreshold,
                 modelQuotaThresholds,
-                byokMode: this.thresholdDialog.byokMode
+                gcpProject: currentGcpProject || null,
+                spendCapUsd: isNaN(spendCap) ? null : spendCap
             };
 
             const currentKey = this.thresholdDialog.byokApiKey ? this.thresholdDialog.byokApiKey.trim() : '';

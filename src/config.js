@@ -53,6 +53,15 @@ const DEFAULT_CONFIG = {
     maxCapacityRetries: 5,         // Max retries for capacity exhaustion
     switchAccountDelayMs: 5000,    // Delay before switching accounts on rate limit
     capacityBackoffTiersMs: [5000, 10000, 20000, 30000, 60000], // Progressive backoff tiers for capacity exhaustion
+    tokenUsageScale: 0.95, // Scale factor for reported token usage (0.95 = report 5% less context window usage)
+    reroute38To37: false, // Redirect Gemini 3.8 Flash requests to Gemini 3.7 Flash
+    vertexFlexMode: true, // Send X-Vertex-AI-LLM-Request-Type: shared & X-Vertex-AI-LLM-Shared-Request-Type: flex on Vertex AI
+    modelSplit: {
+        enabled: false,
+        gemini37Weight: 60,
+        gemini38Weight: 40
+    },
+    upstreams: {}, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
     modelMapping: {},
     // Account selection strategy configuration
     accountSelection: {
@@ -127,6 +136,28 @@ function loadConfig() {
         if (process.env.WEBUI_PASSWORD) config.webuiPassword = process.env.WEBUI_PASSWORD;
         if (process.env.DEBUG === 'true') config.debug = true;
         if (process.env.DEV_MODE === 'true') config.devMode = true;
+        if (process.env.REROUTE_38_TO_37 !== undefined) {
+            config.reroute38To37 = process.env.REROUTE_38_TO_37 === 'true';
+        }
+        if (process.env.VERTEX_FLEX_MODE !== undefined) {
+            config.vertexFlexMode = process.env.VERTEX_FLEX_MODE === 'true';
+        }
+        if (process.env.MODEL_SPLIT_ENABLED !== undefined) {
+            config.modelSplit = config.modelSplit || {};
+            config.modelSplit.enabled = process.env.MODEL_SPLIT_ENABLED === 'true';
+        }
+        if (process.env.MODEL_SPLIT_37_WEIGHT !== undefined) {
+            config.modelSplit = config.modelSplit || {};
+            config.modelSplit.gemini37Weight = Number(process.env.MODEL_SPLIT_37_WEIGHT) || 60;
+        }
+        if (process.env.MODEL_SPLIT_38_WEIGHT !== undefined) {
+            config.modelSplit = config.modelSplit || {};
+            config.modelSplit.gemini38Weight = Number(process.env.MODEL_SPLIT_38_WEIGHT) || 40;
+        }
+        if (process.env.TOKEN_USAGE_SCALE) {
+            const scale = parseFloat(process.env.TOKEN_USAGE_SCALE);
+            if (!isNaN(scale) && scale > 0 && scale <= 2.0) config.tokenUsageScale = scale;
+        }
 
         // Backward compat: debug implies devMode
         if (config.debug && !config.devMode) config.devMode = true;

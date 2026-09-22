@@ -95,13 +95,14 @@ export class SessionRouter {
                     for (const item of data) {
                         if (item && item.sessionKey && item.lastUsed && (now - item.lastUsed <= this.#ttlMs)) {
                             this.#sessions.set(item.sessionKey, {
-                                accountEmail: item.accountEmail,
+                                accountEmail: item.accountEmail || null,
                                 assignedAt: item.assignedAt || item.lastUsed || now,
                                 lastUsed: item.lastUsed || now,
-                                modelId: item.modelId,
+                                modelId: item.modelId || null,
+                                upstreamSessionId: item.upstreamSessionId || null,
                                 requestCount: item.requestCount || 1,
                                 isSubagent: !!item.isSubagent,
-                                tokens: item.tokens || { input: 0, output: 0 }
+                                tokens: item.tokens || { input: 0, output: 0, cached: 0 }
                             });
                             loaded++;
                         }
@@ -118,6 +119,10 @@ export class SessionRouter {
     /**
      * Schedule a debounced async save to disk
      */
+    scheduleSave() {
+        this.#scheduleSave();
+    }
+
     #scheduleSave() {
         this.#isDirty = true;
         if (this.#saveTimer) return;
@@ -147,6 +152,7 @@ export class SessionRouter {
                     assignedAt: entry.assignedAt,
                     lastUsed: entry.lastUsed,
                     modelId: entry.modelId,
+                    upstreamSessionId: entry.upstreamSessionId || null,
                     requestCount: entry.requestCount,
                     isSubagent: entry.isSubagent,
                     tokens: entry.tokens
@@ -168,6 +174,86 @@ export class SessionRouter {
     }
 
     /**
+     * Get the pinned model for a session if one has been assigned
+     * @param {string} sessionKey - Fingerprint for the session
+     * @returns {string|null} Pinned model ID or null
+     */
+    getPinnedModel(sessionKey) {
+        if (!sessionKey || sessionKey === 'anon') return null;
+        this.#pruneStale();
+        const entry = this.#sessions.get(sessionKey);
+        return entry?.modelId || null;
+    }
+
+    /**
+     * Pre-pin a model to a session before account selection
+     * @param {string} sessionKey - Fingerprint for the session
+     * @param {string} modelId - Model ID to attach
+     */
+    pinModel(sessionKey, modelId) {
+        if (!sessionKey || sessionKey === 'anon' || !modelId) return;
+        const existing = this.#sessions.get(sessionKey);
+        if (existing) {
+            existing.modelId = modelId;
+            existing.lastUsed = Date.now();
+        } else {
+            this.#sessions.set(sessionKey, {
+                accountEmail: null,
+                assignedAt: Date.now(),
+                lastUsed: Date.now(),
+                modelId,
+                upstreamSessionId: null,
+                requestCount: 0,
+                isSubagent: false,
+                tokens: { input: 0, output: 0, cached: 0 }
+            });
+        }
+        this.#scheduleSave();
+    }
+
+    /**
+     * Get session entry if it exists
+     * @param {string} sessionKey
+     * @returns {Object|null}
+     */
+    getSession(sessionKey) {
+        if (!sessionKey || sessionKey === 'anon') return null;
+        return this.#sessions.get(sessionKey) || null;
+    }
+
+    /**
+     * Get or create a dedicated upstream sessionId for a session key
+     * @param {string} sessionKey
+     * @param {string|null} accountEmail
+     * @returns {string}
+     */
+    getOrCreateUpstreamSessionId(sessionKey, accountEmail = null) {
+        if (!sessionKey || sessionKey === 'anon') return null;
+        let entry = this.#sessions.get(sessionKey);
+        if (entry?.upstreamSessionId) {
+            return entry.upstreamSessionId;
+        }
+        const newUpstreamId = crypto.randomUUID() + Date.now().toString();
+        if (entry) {
+            entry.upstreamSessionId = newUpstreamId;
+        } else {
+            entry = {
+                accountEmail: accountEmail || null,
+                assignedAt: Date.now(),
+                lastUsed: Date.now(),
+                modelId: null,
+                upstreamSessionId: newUpstreamId,
+                requestCount: 0,
+                isSubagent: false,
+                tokens: { input: 0, output: 0, cached: 0 }
+            };
+            this.#sessions.set(sessionKey, entry);
+        }
+        this.#scheduleSave();
+        return newUpstreamId;
+    }
+
+    /**
      * Get the pinned account for a session if it exists and is healthy
      *
      * @param {string} sessionKey - Fingerprint for the session
@@ -181,12 +267,12 @@ export class SessionRouter {
         this.#pruneStale();
         const entry = this.#sessions.get(sessionKey);
 
-        if (entry) {
+        if (entry && entry.accountEmail) {
             const account = availableAccounts.find(a => a.email === entry.accountEmail);
             if (account) {
                 entry.lastUsed = Date.now();
                 entry.requestCount = (entry.requestCount || 0) + 1;
-                if (modelId) entry.modelId = modelId;
+                if (!entry.modelId && modelId) entry.modelId = modelId;
                 this.#scheduleSave();
                 logger.info(`[CACHE][ROUTING-HIT] 🎯 Session: ${sessionKey} -> Pinned to ${account.email} (prompt cache affinity preserved, reqs: ${entry.requestCount})`);
                 return account;
@@ -194,13 +280,29 @@ export class SessionRouter {
 
             // Account is no longer in available list (rate limited / invalid) -> Failover
             logger.warn(`[CACHE][ROUTING-FAILOVER] ⚠️ Session: ${sessionKey} -> Previous account ${entry.accountEmail} unavailable, rotating to new account`);
-            this.#sessions.delete(sessionKey);
+            entry.accountEmail = null; // Unbind account only; preserve pinned model & session stats!
             this.#scheduleSave();
         } else {
             logger.info(`[CACHE][ROUTING-MISS] 🆕 Session: ${sessionKey} -> No previous affinity found, selecting new account`);
         }
 
         return null;
+    }
+
+    /**
+     * Unbind a session key from its current account (e.g. on rate limit or failover)
+     * Preserves model assignment and session tokens.
+     *
+     * @param {string} sessionKey - Fingerprint for the session
+     */
+    unbindSession(sessionKey) {
+        if (!sessionKey || sessionKey === 'anon') return;
+        if (this.#sessions.has(sessionKey)) {
+            const entry = this.#sessions.get(sessionKey);
+            logger.info(`[CACHE][ROUTING-UNBIND] 🔄 Unbinding session ${sessionKey} from ${entry.accountEmail}`);
+            entry.accountEmail = null;
+            this.#scheduleSave();
+        }
     }
 
     /**
@@ -218,7 +320,7 @@ export class SessionRouter {
         if (existing) {
             existing.accountEmail = accountEmail;
             existing.lastUsed = Date.now();
-            existing.modelId = modelId || existing.modelId;
+            if (!existing.modelId && modelId) existing.modelId = modelId;
             existing.requestCount = (existing.requestCount || 0) + 1;
             if (extra.isSubagent !== undefined) existing.isSubagent = extra.isSubagent;
         } else {
@@ -227,9 +329,10 @@ export class SessionRouter {
                 assignedAt: Date.now(),
                 lastUsed: Date.now(),
                 modelId,
+                upstreamSessionId: null,
                 requestCount: 1,
                 isSubagent: !!extra.isSubagent,
-                tokens: { input: 0, output: 0 }
+                tokens: { input: 0, output: 0, cached: 0 }
             });
         }
         this.#scheduleSave();
@@ -240,13 +343,25 @@ export class SessionRouter {
      */
     recordSessionUsage(sessionKey, tokens = {}) {
         if (!sessionKey || sessionKey === 'anon') return;
-        const entry = this.#sessions.get(sessionKey);
-        if (entry) {
-            entry.tokens = entry.tokens || { input: 0, output: 0 };
-            entry.tokens.input += (tokens.input_tokens || tokens.inputTokens || 0);
-            entry.tokens.output += (tokens.output_tokens || tokens.outputTokens || 0);
-            this.#scheduleSave();
+        let entry = this.#sessions.get(sessionKey);
+        if (!entry) {
+            entry = {
+                accountEmail: null,
+                assignedAt: Date.now(),
+                lastUsed: Date.now(),
+                modelId: null,
+                upstreamSessionId: null,
+                requestCount: 1,
+                isSubagent: false,
+                tokens: { input: 0, output: 0, cached: 0 }
+            };
+            this.#sessions.set(sessionKey, entry);
         }
+        entry.tokens = entry.tokens || { input: 0, output: 0, cached: 0 };
+        entry.tokens.input += (tokens.input_tokens || tokens.inputTokens || 0);
+        entry.tokens.output += (tokens.output_tokens || tokens.outputTokens || 0);
+        entry.tokens.cached = (entry.tokens.cached || 0) + (tokens.cache_read_input_tokens || tokens.cachedTokens || 0);
+        this.#scheduleSave();
     }
 
     /**
@@ -262,24 +377,26 @@ export class SessionRouter {
         const now = Date.now();
 
         for (const [key, entry] of this.#sessions.entries()) {
-            const acc = accounts.find(a => a.email === entry.accountEmail);
+            const acc = entry.accountEmail ? accounts.find(a => a.email === entry.accountEmail) : null;
+            const gcpProject = acc?.gcpProject || accountManager?.getSettings?.()?.gcpProject || null;
+            const isVertex = !!gcpProject;
+
             const modelQuota = acc?.quota?.models?.[entry.modelId] || acc?.models?.[entry.modelId];
-            const remainingFraction = modelQuota?.remainingFraction ?? null;
-            const remainingPercent = remainingFraction !== null ? Math.round(remainingFraction * 100) : null;
+            const remainingFraction = isVertex ? 1.0 : (modelQuota?.remainingFraction ?? null);
+            const remainingPercent = isVertex ? 100 : (remainingFraction !== null ? Math.round(remainingFraction * 100) : null);
             
             // Check if account is currently rate limited for this model
-            const isRateLimited = acc?.modelRateLimits?.[entry.modelId] && acc.modelRateLimits[entry.modelId] > now;
+            const isRateLimited = isVertex ? false : (acc?.modelRateLimits?.[entry.modelId] && acc.modelRateLimits[entry.modelId] > now);
             const rateLimitExpiry = isRateLimited ? acc.modelRateLimits[entry.modelId] : null;
 
             const rawKey = acc?.apiKey || acc?.byokApiKey || null;
             const byokKeyPreview = rawKey ? `${rawKey.slice(0, 8)}...${rawKey.slice(-4)}` : null;
             const isByok = acc?.source === 'gemini-byok' || !!acc?.byokApiKey;
-            const byokMode = acc?.mode || acc?.byokMode || (acc?.source === 'gemini-byok' ? 'default_for_gemini_models' : null);
-            const accountTier = acc?.source === 'gemini-byok' ? 'byok' : (acc?.subscription?.tier && acc.subscription.tier !== 'unknown' ? acc.subscription.tier : (isByok ? 'byok' : 'free'));
+            const accountTier = isVertex ? 'vertex' : (acc?.source === 'gemini-byok' ? 'byok' : (acc?.subscription?.tier && acc.subscription.tier !== 'unknown' ? acc.subscription.tier : (isByok ? 'byok' : (acc ? 'free' : 'none'))));
 
             sessionsList.push({
                 sessionKey: key,
-                accountEmail: entry.accountEmail,
+                accountEmail: entry.accountEmail || 'unassigned',
                 modelId: entry.modelId,
                 requestCount: entry.requestCount || 1,
                 assignedAt: entry.assignedAt,
@@ -287,15 +404,16 @@ export class SessionRouter {
                 idleSeconds: Math.round((now - entry.lastUsed) / 1000),
                 isSubagent: !!entry.isSubagent,
                 accountTier,
-                accountSource: acc?.source || 'oauth',
+                accountSource: isVertex ? 'vertex' : (acc?.source || 'oauth'),
+                isVertex,
+                gcpProject,
                 isByok,
                 hasByokKey: !!rawKey,
-                byokMode,
                 byokKeyPreview,
-                accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || 'ok'),
+                accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || (entry.accountEmail ? 'ok' : 'unassigned')),
                 remainingFraction,
                 remainingPercent,
-                resetTime: modelQuota?.resetTime || null,
+                resetTime: isVertex ? null : (modelQuota?.resetTime || null),
                 rateLimitExpiry,
                 tokens: entry.tokens || null
             });
@@ -339,6 +457,13 @@ export const sessionRouter = new SessionRouter();
  * @returns {string} A stable session ID string matching binary format
  */
 export function deriveSessionId(anthropicRequest, accountEmail) {
+    // 1. If request has a deterministic session key, derive or reuse a dedicated upstream session ID
+    // for that conversation. This ensures isolated, continuous Google TPU prompt cache affinity.
+    const sessionKey = extractSessionKey(anthropicRequest);
+    if (sessionKey && sessionKey !== 'anon') {
+        return sessionRouter.getOrCreateUpstreamSessionId(sessionKey, accountEmail);
+    }
+
     if (!accountEmail) {
         return generateBinaryStyleId();
     }

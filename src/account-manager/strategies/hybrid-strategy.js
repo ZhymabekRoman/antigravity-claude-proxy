@@ -261,7 +261,24 @@ export class HybridStrategy extends BaseStrategy {
         const lruSeconds = timeSinceLastUse / 1000;
         const lruComponent = lruSeconds * this.#weights.lru; // 0-3600 * 0.1 = 0-360 max
 
-        return healthComponent + tokenComponent + quotaComponent + lruComponent;
+        let score = healthComponent + tokenComponent + quotaComponent + lruComponent;
+
+        // Model Tier Affinity:
+        // Free tier BYOK accounts have generous Flash limits (15 RPM, 1500 RPD)
+        // but strict Pro limits (2 RPM, 50 RPD).
+        // Boost Flash models on BYOK (+60) to preserve precious OAuth quota.
+        // Penalize Pro/Opus models on BYOK (-80) so Pro requests route to OAuth/Vertex.
+        const isByok = account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken);
+        if (isByok && modelId) {
+            const isPro = modelId.includes('pro') || modelId.includes('opus');
+            if (isPro) {
+                score -= 80;
+            } else if (modelId.includes('flash') || modelId.includes('sonnet')) {
+                score += 60;
+            }
+        }
+
+        return score;
     }
 
     /**

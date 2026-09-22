@@ -197,6 +197,153 @@ window.Components.serverConfig = () => ({
         }
     },
 
+    // Toggle 3.8 to 3.7 model rerouting with instant save
+    async toggleReroute38To37(enabled) {
+        const store = Alpine.store('global');
+
+        // Optimistic update
+        const previousValue = this.serverConfig.reroute38To37;
+        this.serverConfig.reroute38To37 = enabled;
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reroute38To37: enabled })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                const status = enabled ? store.t('enabledStatus') : store.t('disabledStatus');
+                store.showToast(store.t('reroute38To37Toggled', { status }), 'success');
+                await this.fetchServerConfig(); // Confirm server state
+            } else {
+                throw new Error(data.error || store.t('failedToUpdateReroute38To37'));
+            }
+        } catch (e) {
+            // Rollback on error
+            this.serverConfig.reroute38To37 = previousValue;
+            store.showToast(store.t('failedToUpdateReroute38To37') + ': ' + e.message, 'error');
+        }
+    },
+
+    // Toggle Vertex AI Flex mode with instant save
+    async toggleVertexFlexMode(enabled) {
+        const store = Alpine.store('global');
+
+        // Optimistic update
+        const previousValue = this.serverConfig.vertexFlexMode;
+        this.serverConfig.vertexFlexMode = enabled;
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vertexFlexMode: enabled })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                const status = enabled ? store.t('enabledStatus') : store.t('disabledStatus');
+                store.showToast(store.t('vertexFlexModeToggled', { status }), 'success');
+                await this.fetchServerConfig(); // Confirm server state
+            } else {
+                throw new Error(data.error || store.t('failedToUpdateVertexFlexMode'));
+            }
+        } catch (e) {
+            // Rollback on error
+            this.serverConfig.vertexFlexMode = previousValue;
+            store.showToast(store.t('failedToUpdateVertexFlexMode') + ': ' + e.message, 'error');
+        }
+    },
+
+    // Toggle Weighted Model Split with instant save
+    async toggleModelSplit(enabled) {
+        const store = Alpine.store('global');
+        if (!this.serverConfig.modelSplit) {
+            this.serverConfig.modelSplit = { enabled: false, gemini37Weight: 60, gemini38Weight: 40 };
+        }
+
+        const previousValue = this.serverConfig.modelSplit.enabled;
+        this.serverConfig.modelSplit.enabled = enabled;
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    modelSplit: {
+                        enabled,
+                        gemini37Weight: this.serverConfig.modelSplit.gemini37Weight ?? 60,
+                        gemini38Weight: this.serverConfig.modelSplit.gemini38Weight ?? 40
+                    }
+                })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                const status = enabled ? store.t('enabledStatus') : store.t('disabledStatus');
+                store.showToast(store.t('modelSplitToggled', { status }), 'success');
+                await this.fetchServerConfig();
+            } else {
+                throw new Error(data.error || store.t('failedToUpdateModelSplit'));
+            }
+        } catch (e) {
+            this.serverConfig.modelSplit.enabled = previousValue;
+            store.showToast(store.t('failedToUpdateModelSplit') + ': ' + e.message, 'error');
+        }
+    },
+
+    // Update Weighted Model Split weights with debounced save
+    async updateModelSplitWeights(w37, w38) {
+        const store = Alpine.store('global');
+        if (!this.serverConfig.modelSplit) {
+            this.serverConfig.modelSplit = { enabled: false, gemini37Weight: 60, gemini38Weight: 40 };
+        }
+
+        const safe37 = Math.max(0, Math.min(100, Math.round(w37)));
+        const safe38 = Math.max(0, Math.min(100, Math.round(w38)));
+
+        this.serverConfig.modelSplit.gemini37Weight = safe37;
+        this.serverConfig.modelSplit.gemini38Weight = safe38;
+
+        if (this._modelSplitSaveTimeout) {
+            clearTimeout(this._modelSplitSaveTimeout);
+        }
+
+        this._modelSplitSaveTimeout = setTimeout(async () => {
+            try {
+                const { response, newPassword } = await window.utils.request('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        modelSplit: {
+                            enabled: this.serverConfig.modelSplit.enabled ?? false,
+                            gemini37Weight: safe37,
+                            gemini38Weight: safe38
+                        }
+                    })
+                }, store.webuiPassword);
+
+                if (newPassword) store.webuiPassword = newPassword;
+
+                const data = await response.json();
+                if (data.status === 'ok') {
+                    store.showToast(store.t('modelSplitWeightsUpdated'), 'success');
+                    await this.fetchServerConfig();
+                }
+            } catch (e) {
+                store.showToast(store.t('failedToUpdateModelSplit') + ': ' + e.message, 'error');
+            }
+        }, 400);
+    },
+
     // Generic debounced save method for numeric configs with validation
     async saveConfigField(fieldName, value, displayName, validator = null) {
         const store = Alpine.store('global');
