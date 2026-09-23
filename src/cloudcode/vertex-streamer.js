@@ -218,21 +218,40 @@ export async function* streamVertex(anthropicRequest, token, gcpProject, account
             if (contPayload.generationConfig?.thinkingConfig) {
                 contPayload.generationConfig.thinkingConfig.thinkingBudget = 0;
             }
-            const contents = contPayload.contents || [];
-            if (contents.length > 0) {
-                const lastContent = contents[contents.length - 1];
-                if (lastContent?.role === 'user') {
-                    lastContent.parts.push({
-                        text: '\n\n[System Note: Based on your reasoning above, now proceed directly to executing the required tool call(s) or provide the final direct answer. Do not output more reasoning.]'
-                    });
+            if (!contPayload.contents) contPayload.contents = [];
+
+            // Append model's actual reasoning so it has context of what it just planned
+            if (accumulatedThinkingText && accumulatedThinkingText.trim()) {
+                contPayload.contents.push({
+                    role: 'model',
+                    parts: [{ text: accumulatedThinkingText }]
+                });
+                contPayload.contents.push({
+                    role: 'user',
+                    parts: [{ text: '[System Note: Continue directly to calling the appropriate tool(s) or provide the direct final answer based on your plan.]' }]
+                });
+            } else {
+                const contents = contPayload.contents;
+                if (contents.length > 0) {
+                    const lastContent = contents[contents.length - 1];
+                    if (lastContent?.role === 'user') {
+                        lastContent.parts.push({
+                            text: '\n\n[System Note: Please proceed directly to executing the required tool call(s) or provide the final direct answer.]'
+                        });
+                    }
                 }
             }
+
             const contRes = await throttledFetch(url, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(contPayload),
             });
-            if (!contRes.ok) return null;
+            if (!contRes.ok) {
+                const errText = await contRes.text().catch(() => '');
+                logger.warn(`[Vertex] Continuation failed HTTP ${contRes.status}: ${errText.slice(0, 300)}`);
+                return null;
+            }
             return parseGoogleContinuationStream(contRes);
         } catch (err) {
             logger.warn(`[Vertex] Continuation error: ${err.message}`);

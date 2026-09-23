@@ -463,13 +463,28 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             if (contPayload.request?.generationConfig?.thinkingConfig) {
                                 contPayload.request.generationConfig.thinkingConfig.thinkingBudget = 0;
                             }
-                            const contents = contPayload.request?.contents || [];
-                            if (contents.length > 0) {
-                                const lastContent = contents[contents.length - 1];
-                                if (lastContent && lastContent.role === 'user') {
-                                    lastContent.parts.push({
-                                        text: '\n\n[System Note: Based on your reasoning above, now proceed directly to executing the required tool call(s) or provide the final direct answer. Do not output more reasoning.]'
-                                    });
+                            if (!contPayload.request) contPayload.request = {};
+                            if (!contPayload.request.contents) contPayload.request.contents = [];
+
+                            // Append model's actual reasoning so it has context of what it just planned
+                            if (accumulatedThinkingText && accumulatedThinkingText.trim()) {
+                                contPayload.request.contents.push({
+                                    role: 'model',
+                                    parts: [{ text: accumulatedThinkingText }]
+                                });
+                                contPayload.request.contents.push({
+                                    role: 'user',
+                                    parts: [{ text: '[System Note: Continue directly to calling the appropriate tool(s) or provide the direct final answer based on your plan.]' }]
+                                });
+                            } else {
+                                const contents = contPayload.request.contents;
+                                if (contents.length > 0) {
+                                    const lastContent = contents[contents.length - 1];
+                                    if (lastContent && lastContent.role === 'user') {
+                                        lastContent.parts.push({
+                                            text: '\n\n[System Note: Please proceed directly to executing the required tool call(s) or provide the final direct answer.]'
+                                        });
+                                    }
                                 }
                             }
 
