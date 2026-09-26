@@ -379,9 +379,11 @@ export class SessionRouter {
         for (const [key, entry] of this.#sessions.entries()) {
             const acc = entry.accountEmail ? accounts.find(a => a.email === entry.accountEmail) : null;
             const gcpProject = acc?.gcpProject || accountManager?.getSettings?.()?.gcpProject || null;
-            const isVertex = !!gcpProject;
+            const isClaude = Boolean(entry.modelId && entry.modelId.toLowerCase().includes('claude'));
+            const isVertex = Boolean(gcpProject && !isClaude);
 
-            const modelQuota = acc?.quota?.models?.[entry.modelId] || acc?.models?.[entry.modelId];
+            const effectiveQuotaModel = (isClaude && !acc?.quota?.models?.[entry.modelId]) ? 'gemini-3.7-flash-tiered' : entry.modelId;
+            const modelQuota = acc?.quota?.models?.[effectiveQuotaModel] || acc?.models?.[effectiveQuotaModel];
             const remainingFraction = isVertex ? 1.0 : (modelQuota?.remainingFraction ?? null);
             const remainingPercent = isVertex ? 100 : (remainingFraction !== null ? Math.round(remainingFraction * 100) : null);
             

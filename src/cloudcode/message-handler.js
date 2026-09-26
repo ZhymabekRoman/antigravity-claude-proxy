@@ -173,7 +173,12 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                 || accountManager.getSettings?.()?.gcpProject
                 || null;
 
-            if (gcpProject) {
+            const isClaude = Boolean(
+                (model && model.toLowerCase().includes('claude')) ||
+                (anthropicRequest?.model && anthropicRequest.model.toLowerCase().includes('claude'))
+            );
+
+            if (gcpProject && !isClaude) {
                 logger.info(`[Vertex] 🎯 Routing (non-stream) via Vertex AI for ${account.email} (project: ${gcpProject}, token: ${tokenMs}ms)`);
                 const result = await sendVertexMessage(anthropicRequest, token, gcpProject, account, accountManager);
                 clearRateLimitState(account.email, model);

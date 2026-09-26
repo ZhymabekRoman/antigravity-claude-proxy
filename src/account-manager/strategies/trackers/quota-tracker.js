@@ -33,7 +33,8 @@ export class QuotaTracker {
      */
     getQuotaFraction(account, modelId) {
         // Accounts using direct Vertex AI route (gcpProject) do not share Cloud Code quota
-        if (account?.gcpProject) {
+        const isClaude = Boolean(modelId && modelId.toLowerCase().includes('claude'));
+        if (account?.gcpProject && !isClaude) {
             return 1.0;
         }
 
@@ -41,8 +42,9 @@ export class QuotaTracker {
         if (account?.modelRateLimits?.[modelId]?.isRateLimited && account.modelRateLimits[modelId].resetTime > Date.now()) {
             return 0;
         }
-        if (account?.quota?.models?.[modelId]) {
-            const fraction = account.quota.models[modelId].remainingFraction;
+        const effectiveModel = (isClaude && !account?.quota?.models?.[modelId]) ? 'gemini-3.7-flash-tiered' : modelId;
+        if (account?.quota?.models?.[effectiveModel]) {
+            const fraction = account.quota.models[effectiveModel].remainingFraction;
             if (typeof fraction === 'number') return fraction;
         }
         return null;

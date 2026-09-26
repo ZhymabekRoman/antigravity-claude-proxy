@@ -120,7 +120,8 @@ export class BaseStrategy {
         if (modelId && account.modelRateLimits && account.modelRateLimits[modelId]) {
             const limit = account.modelRateLimits[modelId];
             if (limit.isRateLimited && limit.resetTime > Date.now()) {
-                if (!account.gcpProject) {
+                const isClaude = modelId.toLowerCase().includes('claude');
+                if (!account.gcpProject || isClaude) {
                     return false;
                 }
             }

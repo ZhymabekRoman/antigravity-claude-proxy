@@ -23,7 +23,8 @@ export function isAllRateLimited(accounts, modelId) {
     return accounts.every(acc => {
         if (acc.isInvalid) return true; // Invalid accounts count as unavailable
         if (acc.enabled === false) return true; // Disabled accounts count as unavailable
-        if (acc.gcpProject) return false; // Vertex accounts are not bounded by CloudCode rate limits
+        const isClaude = Boolean(modelId && modelId.toLowerCase().includes('claude'));
+        if (acc.gcpProject && !isClaude) return false; // Vertex accounts are not bounded by CloudCode rate limits
         const modelLimits = acc.modelRateLimits || {};
         const limit = modelLimits[modelId];
         return limit && limit.isRateLimited && limit.resetTime > Date.now();
@@ -38,6 +39,7 @@ export function isAllRateLimited(accounts, modelId) {
  * @returns {Array} Array of available account objects
  */
 export function getAvailableAccounts(accounts, modelId = null) {
+    const isClaude = Boolean(modelId && modelId.toLowerCase().includes('claude'));
     return accounts.filter(acc => {
         if (acc.isInvalid) return false;
 
@@ -45,7 +47,7 @@ export function getAvailableAccounts(accounts, modelId = null) {
         if (acc.enabled === false) return false;
 
         // For accounts routing directly via Vertex AI (gcpProject), Cloud Code rate limits do not apply
-        if (acc.gcpProject) {
+        if (acc.gcpProject && !isClaude) {
             return true;
         }
 
