@@ -20,7 +20,7 @@ import { logger } from '../utils/logger.js';
  * @param {Function} [onThoughtOnly] - Optional async callback to retrieve continuation stream when model emits 0 text/tools
  * @yields {Object} Anthropic-format SSE events
  */
-export async function* streamSSEResponse(response, originalModel, onThoughtOnly = null) {
+export async function* streamSSEResponse(response, originalModel, onThoughtOnly = null, isSideQuestion = false) {
     const messageId = `msg_${crypto.randomBytes(16).toString('hex')}`;
     let hasEmittedStart = false;
     let blockIndex = 0;
@@ -172,6 +172,45 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                         } else if (part.functionCall) {
                             hasEmittedTextOrTool = true;
+
+                            if (isSideQuestion) {
+                                // Claude Code /btw strictly disallows tool_use blocks.
+                                // If the model attempts a tool call during /btw, convert it to explanatory text
+                                // so Claude Code does not abort with "(The model tried to call <tool> instead of answering directly)"
+                                const target = part.functionCall.args?.file_path || part.functionCall.args?.command || '';
+                                const noteText = `\n\n_[Note: Model attempted to consult \`${part.functionCall.name}\`${target ? ` (\`${target}\`)` : ''}, but side questions (/btw) run in direct-answer mode. Please ask in the main conversation if tool execution is needed.]_\n\n`;
+
+                                if (currentBlockType !== 'text') {
+                                    if (currentBlockType === 'thinking' && currentThinkingSignature) {
+                                        pendingEvents.push({
+                                            type: 'content_block_delta',
+                                            index: blockIndex,
+                                            delta: { type: 'signature_delta', signature: currentThinkingSignature }
+                                        });
+                                        currentThinkingSignature = '';
+                                    }
+                                    if (currentBlockType !== null) {
+                                        pendingEvents.push({ type: 'content_block_stop', index: blockIndex });
+                                        blockIndex++;
+                                    }
+                                    currentBlockType = 'text';
+                                    pendingEvents.push({
+                                        type: 'content_block_start',
+                                        index: blockIndex,
+                                        content_block: { type: 'text', text: '' }
+                                    });
+                                }
+                                pendingEvents.push({
+                                    type: 'content_block_delta',
+                                    index: blockIndex,
+                                    delta: {
+                                        type: 'text_delta',
+                                        text: noteText
+                                    }
+                                });
+                                continue;
+                            }
+
                             const functionCallSignature = part.thoughtSignature || '';
 
                             if (currentBlockType === 'thinking' && currentThinkingSignature) {
@@ -361,6 +400,45 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                     } else if (part.functionCall) {
                         hasEmittedTextOrTool = true;
+
+                        if (isSideQuestion) {
+                            // Claude Code /btw strictly disallows tool_use blocks.
+                            // If the model attempts a tool call during /btw, convert it to explanatory text
+                            // so Claude Code does not abort with "(The model tried to call <tool> instead of answering directly)"
+                            const target = part.functionCall.args?.file_path || part.functionCall.args?.command || '';
+                            const noteText = `\n\n_[Note: Model attempted to consult \`${part.functionCall.name}\`${target ? ` (\`${target}\`)` : ''}, but side questions (/btw) run in direct-answer mode. Please ask in the main conversation if tool execution is needed.]_\n\n`;
+
+                            if (currentBlockType !== 'text') {
+                                if (currentBlockType === 'thinking' && currentThinkingSignature) {
+                                    yield {
+                                        type: 'content_block_delta',
+                                        index: blockIndex,
+                                        delta: { type: 'signature_delta', signature: currentThinkingSignature }
+                                    };
+                                    currentThinkingSignature = '';
+                                }
+                                if (currentBlockType !== null) {
+                                    yield { type: 'content_block_stop', index: blockIndex };
+                                    blockIndex++;
+                                }
+                                currentBlockType = 'text';
+                                yield {
+                                    type: 'content_block_start',
+                                    index: blockIndex,
+                                    content_block: { type: 'text', text: '' }
+                                };
+                            }
+                            yield {
+                                type: 'content_block_delta',
+                                index: blockIndex,
+                                delta: {
+                                    type: 'text_delta',
+                                    text: noteText
+                                }
+                            };
+                            continue;
+                        }
+
                         // Handle tool use
                         // For Gemini 3+, capture thoughtSignature from the functionCall part
                         // The signature is a sibling to functionCall, not inside it
@@ -557,7 +635,7 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
  * @param {Response} response 
  * @yields {Object} Anthropic content events
  */
-export async function* parseGoogleContinuationStream(response) {
+export async function* parseGoogleContinuationStream(response, isSideQuestion = false) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -592,6 +670,26 @@ export async function* parseGoogleContinuationStream(response) {
 
                 for (const part of parts) {
                     if (part.functionCall) {
+                        if (isSideQuestion) {
+                            const target = part.functionCall.args?.file_path || part.functionCall.args?.command || '';
+                            const noteText = `\n\n_[Note: Model attempted to consult \`${part.functionCall.name}\`${target ? ` (\`${target}\`)` : ''}, but side questions (/btw) run in direct-answer mode. Please ask in the main conversation if tool execution is needed.]_\n\n`;
+                            if (currentBlockType !== 'text') {
+                                if (currentBlockType !== null) {
+                                    yield { type: 'content_block_stop' };
+                                }
+                                currentBlockType = 'text';
+                                yield {
+                                    type: 'content_block_start',
+                                    content_block: { type: 'text', text: '' }
+                                };
+                            }
+                            yield {
+                                type: 'content_block_delta',
+                                delta: { type: 'text_delta', text: noteText }
+                            };
+                            continue;
+                        }
+
                         if (currentBlockType !== null) {
                             yield { type: 'content_block_stop' };
                         }

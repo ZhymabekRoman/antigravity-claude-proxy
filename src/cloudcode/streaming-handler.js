@@ -24,6 +24,7 @@ import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
 import { streamSSEResponse, parseGoogleContinuationStream } from './sse-streamer.js';
+import { isSideQuestionRequest } from '../format/request-converter.js';
 import { getFallbackModel } from '../fallback-config.js';
 import {
     getRateLimitBackoff,
@@ -460,6 +461,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                     // Stream the response with retry logic for empty responses
                     let currentResponse = response;
+                    const isSideQuestion = isSideQuestionRequest(anthropicRequest.messages, anthropicRequest.system);
 
                     const onThoughtOnly = async ({ accumulatedThinkingText }) => {
                         logger.info(`[CloudCode] 🔄 Thought-only response detected (${accumulatedThinkingText?.length || 0} chars). Auto-retrying with tool continuation...`);
@@ -550,7 +552,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 logger.warn(`[CloudCode] Continuation request failed HTTP ${contRes.status}`);
                                 return null;
                             }
-                            return parseGoogleContinuationStream(contRes);
+                            return parseGoogleContinuationStream(contRes, isSideQuestion);
                         } catch (err) {
                             logger.warn(`[CloudCode] Continuation execution error:`, err.message);
                             return null;
@@ -565,7 +567,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             let outputTokens = 0;
                             let inputTokens = 0;
                             let cachedTokens = 0;
-                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model, onThoughtOnly)) {
+                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model, onThoughtOnly, isSideQuestion)) {
                                 if (!tFirstToken && (event?.type === 'content_block_delta' || event?.type === 'content_block_start' || event?.type === 'message_delta')) {
                                     tFirstToken = Date.now();
                                 }

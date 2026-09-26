@@ -25,6 +25,32 @@ import {
 import { logger } from '../utils/logger.js';
 
 /**
+ * Detect Claude Code side questions (/btw)
+ * @param {Array} messages - Anthropic messages array
+ * @param {string|Array} system - Anthropic system prompt
+ * @returns {boolean}
+ */
+export function isSideQuestionRequest(messages, system) {
+    return Boolean(
+        (messages && messages.some(m => {
+            if (!m || !m.content) return false;
+            if (typeof m.content === 'string') {
+                return m.content.includes('This is a side question from the user');
+            }
+            if (Array.isArray(m.content)) {
+                return m.content.some(c => c && (
+                    (typeof c.text === 'string' && c.text.includes('This is a side question from the user')) ||
+                    (typeof c.content === 'string' && c.content.includes('This is a side question from the user'))
+                ));
+            }
+            return false;
+        })) ||
+        (typeof system === 'string' && system.includes('This is a side question from the user')) ||
+        (Array.isArray(system) && system.some(s => s && typeof s.text === 'string' && s.text.includes('This is a side question from the user')))
+    );
+}
+
+/**
  * Convert Anthropic Messages API request to the format expected by Cloud Code
  *
  * Uses Google Generative AI format, but for Claude models:
@@ -48,20 +74,7 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     const isThinking = isThinkingModel(isByok ? 'gemini-3.7-flash' : modelName);
 
     // Detect Claude Code side questions (/btw)
-    const isSideQuestion = (messages && messages.some(m => {
-        if (!m || !m.content) return false;
-        if (typeof m.content === 'string') {
-            return m.content.includes('This is a side question from the user');
-        }
-        if (Array.isArray(m.content)) {
-            return m.content.some(c => c && (
-                (typeof c.text === 'string' && c.text.includes('This is a side question from the user')) ||
-                (typeof c.content === 'string' && c.content.includes('This is a side question from the user'))
-            ));
-        }
-        return false;
-    })) || (typeof system === 'string' && system.includes('This is a side question from the user'))
-       || (Array.isArray(system) && system.some(s => s && typeof s.text === 'string' && s.text.includes('This is a side question from the user')));
+    const isSideQuestion = isSideQuestionRequest(messages, system);
 
     const googleRequest = {
         contents: [],
@@ -184,6 +197,21 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     // Filter unsigned thinking blocks for Claude models
     if (isClaudeModel) {
         googleRequest.contents = filterUnsignedThinkingBlocks(googleRequest.contents);
+    }
+
+    // For Claude Code side questions (/btw):
+    // Inject a crystal-clear override instruction directly into the side question prompt
+    // to strictly prevent Gemini from executing tools and force direct natural language explanation.
+    if (isSideQuestion) {
+        for (const content of googleRequest.contents) {
+            if (content.role === 'user' && Array.isArray(content.parts)) {
+                for (const part of content.parts) {
+                    if (typeof part.text === 'string' && part.text.includes('This is a side question from the user')) {
+                        part.text = `[CRITICAL INSTRUCTION: You are answering a /btw side question. You are strictly FORBIDDEN from using tools or function calls (no Read, Edit, Bash, etc.). Answer the user's question directly in clear natural language based on the conversation context.]\n\n` + part.text;
+                    }
+                }
+            }
+        }
     }
 
     // Generation config
