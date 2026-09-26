@@ -47,6 +47,22 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     const isGeminiModel = isByok || modelFamily === 'gemini';
     const isThinking = isThinkingModel(isByok ? 'gemini-3.7-flash' : modelName);
 
+    // Detect Claude Code side questions (/btw)
+    const isSideQuestion = (messages && messages.some(m => {
+        if (!m || !m.content) return false;
+        if (typeof m.content === 'string') {
+            return m.content.includes('This is a side question from the user');
+        }
+        if (Array.isArray(m.content)) {
+            return m.content.some(c => c && (
+                (typeof c.text === 'string' && c.text.includes('This is a side question from the user')) ||
+                (typeof c.content === 'string' && c.content.includes('This is a side question from the user'))
+            ));
+        }
+        return false;
+    })) || (typeof system === 'string' && system.includes('This is a side question from the user'))
+       || (Array.isArray(system) && system.some(s => s && typeof s.text === 'string' && s.text.includes('This is a side question from the user')));
+
     const googleRequest = {
         contents: [],
         generationConfig: {}
@@ -287,9 +303,18 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
         googleRequest.tools = [{ functionDeclarations }];
         logger.debug(`[RequestConverter] Tools: ${JSON.stringify(googleRequest.tools).substring(0, 300)}`);
 
-        // For Claude models, set functionCallingConfig.mode = "VALIDATED"
-        // This ensures strict parameter validation (matches opencode-antigravity-auth)
-        if (isClaudeModel) {
+        // If side question (/btw), enforce mode: "NONE" to preserve prompt cache while completely
+        // disallowing tool calls, preventing Claude Code rejection "(The model tried to call <tool> instead of answering directly)"
+        if (isSideQuestion) {
+            googleRequest.toolConfig = {
+                functionCallingConfig: {
+                    mode: 'NONE'
+                }
+            };
+            logger.info('[RequestConverter] 🛡️ Side question (/btw) detected: set functionCallingConfig.mode = "NONE" (TPU cache preserved)');
+        } else if (isClaudeModel) {
+            // For Claude models, set functionCallingConfig.mode = "VALIDATED"
+            // This ensures strict parameter validation (matches opencode-antigravity-auth)
             googleRequest.toolConfig = {
                 functionCallingConfig: {
                     mode: 'VALIDATED'
