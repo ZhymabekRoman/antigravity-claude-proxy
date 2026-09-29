@@ -112,8 +112,16 @@ export class AccountManager {
      * Excludes 0% quota accounts until their real reset date so they aren't hammered with 429s.
      */
     async syncAccountQuotas() {
-        const enabledAccounts = this.#accounts.filter(a => a.enabled !== false && !a.isInvalid);
-        for (const account of enabledAccounts) {
+        const now = Date.now();
+        // Probe healthy accounts, plus accounts stuck in transient VALIDATION_REQUIRED for > 15 mins
+        const accountsToSync = this.#accounts.filter(a => {
+            if (a.enabled === false) return false;
+            if (!a.isInvalid) return true;
+            // Optimistic probing for validation challenges after 15 minutes
+            return a.verifyUrl && a.invalidAt && (now - a.invalidAt > 15 * 60 * 1000);
+        });
+
+        for (const account of accountsToSync) {
             // Vertex accounts use Pay-As-You-Go with GCP projects and do not use CloudCode free quotas
             if (account.gcpProject) continue;
             try {
@@ -121,6 +129,12 @@ export class AccountManager {
                 const projectId = account.subscription?.projectId || null;
                 const quotas = await getModelQuotas(token, projectId);
                 if (quotas && Object.keys(quotas).length > 0) {
+                    // If the account was invalid and successfully retrieved quotas, it has unblocked!
+                    if (account.isInvalid && account.verifyUrl) {
+                        logger.info(`[AccountManager] 🌟 Account ${account.email} successfully fetched quotas after validation challenge! Auto-clearing invalid status.`);
+                        this.clearInvalid(account.email);
+                    }
+
                     account.quota = {
                         models: quotas,
                         lastChecked: Date.now()

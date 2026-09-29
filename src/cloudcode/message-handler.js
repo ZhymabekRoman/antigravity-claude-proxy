@@ -351,11 +351,16 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                             }
 
                             // 403 with VALIDATION_REQUIRED or PERMISSION_DENIED is an account-level error
-                            // The account needs validation (captcha, terms, etc.) - trying different endpoints won't help
-                            // Mark account as invalid (requires user intervention) and rotate (fixes #248)
+                            // The account needs validation (captcha, terms, etc.)
+                            // If another endpoint is available, try it first before locking out the account
                             if (response.status === 403 && isValidationRequired(errorText)) {
+                                if (endpointIndex < ANTIGRAVITY_ENDPOINT_FALLBACKS.length - 1) {
+                                    logger.warn(`[CloudCode] 403 VALIDATION_REQUIRED on ${endpoint} for ${account.email}, falling back to next endpoint (${ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex + 1]})...`);
+                                    endpointIndex++;
+                                    continue;
+                                }
                                 const verifyUrl = extractVerificationUrl(errorText);
-                                logger.warn(`[CloudCode] 403 VALIDATION_REQUIRED/PERMISSION_DENIED for ${account.email}, marking invalid and rotating account...`);
+                                logger.warn(`[CloudCode] 403 VALIDATION_REQUIRED across all endpoints for ${account.email}, marking invalid and rotating account...`);
                                 accountManager.markInvalid(account.email, 'Account requires verification', verifyUrl);
                                 throw new AccountForbiddenError(errorText, account.email);
                             }

@@ -72,6 +72,8 @@ export function getInvalidAccounts(accounts) {
     return accounts.filter(acc => acc.isInvalid);
 }
 
+export const VALIDATION_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes auto-recovery cooldown for Google challenges
+
 /**
  * Clear expired rate limits
  *
@@ -83,6 +85,17 @@ export function clearExpiredLimits(accounts) {
     let cleared = 0;
 
     for (const account of accounts) {
+        // Auto-recover VALIDATION_REQUIRED accounts after cooldown window
+        if (account.isInvalid && account.verifyUrl && account.invalidAt) {
+            if (now - account.invalidAt >= VALIDATION_COOLDOWN_MS) {
+                account.isInvalid = false;
+                account.invalidReason = null;
+                account.verifyUrl = null;
+                cleared++;
+                logger.info(`[AccountManager] 🔄 Validation challenge cooldown expired for ${account.email}. Auto-cleared invalid status for optimistic probing.`);
+            }
+        }
+
         if (account.modelRateLimits) {
             for (const [modelId, limit] of Object.entries(account.modelRateLimits)) {
                 if (limit.isRateLimited && limit.resetTime <= now) {

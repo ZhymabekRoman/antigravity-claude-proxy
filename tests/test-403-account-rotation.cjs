@@ -420,6 +420,25 @@ async function runTests() {
         assertTrue(accounts[0].isInvalid, 'isInvalid should remain true');
     });
 
+    test('VALIDATION_REQUIRED auto-recovers after VALIDATION_COOLDOWN_MS in clearExpiredLimits', async () => {
+        const { clearExpiredLimits, VALIDATION_COOLDOWN_MS } = await import('../src/account-manager/rate-limits.js');
+        assertTrue(VALIDATION_COOLDOWN_MS > 0, 'VALIDATION_COOLDOWN_MS should be positive');
+
+        const verifyUrl = 'https://accounts.google.com/signin/continue?sarp=1';
+        const accounts = [
+            { email: 'recent@example.com', enabled: true, isInvalid: true, verifyUrl, invalidAt: Date.now() - 1000 },
+            { email: 'expired@example.com', enabled: true, isInvalid: true, verifyUrl, invalidAt: Date.now() - VALIDATION_COOLDOWN_MS - 5000 },
+            { email: 'auth@example.com', enabled: true, isInvalid: true, verifyUrl: null, invalidAt: Date.now() - VALIDATION_COOLDOWN_MS - 5000 }
+        ];
+
+        const cleared = clearExpiredLimits(accounts);
+        assertEqual(cleared, 1, 'Should have cleared exactly 1 expired validation account');
+        assertTrue(accounts[0].isInvalid, 'Recent validation account should still be invalid');
+        assertFalse(accounts[1].isInvalid, 'Expired validation account should be re-enabled');
+        assertEqual(accounts[1].verifyUrl, null, 'verifyUrl should be reset');
+        assertTrue(accounts[2].isInvalid, 'Auth error without verifyUrl should NEVER auto-expire');
+    });
+
     // =========================================================================
     // Summary
     // =========================================================================

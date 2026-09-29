@@ -31,10 +31,10 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
             lastUsed: acc.lastUsed || null,
             enabled: acc.enabled !== false, // Default to true if not specified
             // Reset invalid flag on startup - give accounts a fresh chance
-            // EXCEPT accounts with a verifyUrl — those need user intervention
-            isInvalid: acc.verifyUrl ? (acc.isInvalid || false) : false,
-            invalidReason: acc.verifyUrl ? (acc.invalidReason || null) : null,
-            verifyUrl: acc.verifyUrl || null,
+            // Verification errors (verifyUrl) auto-clear if older than 30 minutes (transient Google challenges)
+            isInvalid: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? (acc.isInvalid || false) : false,
+            invalidReason: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? (acc.invalidReason || null) : null,
+            verifyUrl: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? acc.verifyUrl : null,
             modelRateLimits: acc.modelRateLimits || {},
             // New fields for subscription and quota tracking
             subscription: acc.subscription || { tier: 'unknown', projectId: null, detectedAt: null },

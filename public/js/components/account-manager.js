@@ -179,7 +179,17 @@ window.Components.accountManager = () => ({
         const account = (dataStore.accounts || []).find(a => a.email === email);
         if (account?.verifyUrl) {
             window.open(account.verifyUrl, '_blank');
-            store.showToast(store.t('verifyThenRefresh') || 'After completing verification, click the ↻ Refresh button to re-enable this account', 'info', 10000);
+            store.showToast(store.t('verifyThenRefresh') || 'Verification page opened. Returning to this tab will automatically re-check account status.', 'info', 10000);
+
+            // Auto-refresh when user returns focus to this browser tab
+            const onWindowFocus = async () => {
+                window.removeEventListener('focus', onWindowFocus);
+                setTimeout(async () => {
+                    store.showToast(`Re-checking status for ${Redact.email(email)}...`, 'info', 3000);
+                    await this.refreshAccount(email);
+                }, 1000);
+            };
+            window.addEventListener('focus', onWindowFocus, { once: true });
             return;
         }
         // Otherwise fall back to OAuth re-auth
