@@ -264,6 +264,16 @@ export const GEMINI_SIGNATURE_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 // Cache TTL for model validation (5 minutes)
 export const MODEL_VALIDATION_CACHE_TTL_MS = 5 * 60 * 1000;
 
+// Google Safety Settings configured with BLOCK_NONE for all harm categories
+// Proactively prevents false-positive safety triggers on code auditing, security research, and vulnerability testing
+export const DEFAULT_SAFETY_SETTINGS = [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+];
+
 /**
  * Get the model family from model name (dynamic detection, no hardcoded list).
  * @param {string} modelName - The model name from the request
@@ -599,6 +609,7 @@ export default {
     GEMINI_SKIP_SIGNATURE,
     GEMINI_SIGNATURE_CACHE_TTL_MS,
     MODEL_VALIDATION_CACHE_TTL_MS,
+    DEFAULT_SAFETY_SETTINGS,
     getModelFamily,
     isThinkingModel,
     OAUTH_CONFIG,

@@ -5,6 +5,7 @@
 
 import {
     GEMINI_MAX_OUTPUT_TOKENS,
+    DEFAULT_SAFETY_SETTINGS,
     getModelFamily,
     isThinkingModel
 } from '../constants.js';
@@ -78,7 +79,8 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
 
     const googleRequest = {
         contents: [],
-        generationConfig: {}
+        generationConfig: {},
+        safetySettings: DEFAULT_SAFETY_SETTINGS
     };
 
     // Sanitize system prompt to avoid Google CloudCode server WAF triggers
