@@ -148,6 +148,53 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     // Gemini needs recovery for tool loops/interrupted tools (stripped thinking)
     let processedMessages = messages;
 
+    // Fix 4: Prune older historical thinking blocks when approaching the context limit (~700k+ tokens / ~2MB body)
+    // Only apply when the context window is near 1M tokens to preserve full reasoning traces on smaller contexts.
+    // Preserves the latest assistant turn's thinking block to ensure turn continuity.
+    const rawPayloadSize = JSON.stringify(messages).length;
+    const isNearContextLimit = rawPayloadSize > 1800000; // ~1.8MB JSON is ~600k-700k tokens
+
+    if (isNearContextLimit && Array.isArray(processedMessages) && processedMessages.length > 2) {
+        const assistantIndices = [];
+        for (let i = 0; i < processedMessages.length; i++) {
+            const role = processedMessages[i]?.role;
+            if (role === 'assistant' || role === 'model') {
+                assistantIndices.push(i);
+            }
+        }
+
+        // Keep thinking only on the latest assistant turn
+        if (assistantIndices.length > 1) {
+            const pruneIndices = new Set(assistantIndices.slice(0, -1));
+            let prunedCount = 0;
+            let prunedChars = 0;
+
+            processedMessages = processedMessages.map((msg, idx) => {
+                if (pruneIndices.has(idx) && Array.isArray(msg.content)) {
+                    const filteredContent = msg.content.filter(block => {
+                        if (block && typeof block === 'object' && (block.type === 'thinking' || block.type === 'thought' || block.thought === true)) {
+                            prunedCount++;
+                            prunedChars += (block.thinking?.length || block.text?.length || 0);
+                            return false;
+                        }
+                        return true;
+                    });
+
+                    // Ensure turn still has at least one content block
+                    return {
+                        ...msg,
+                        content: filteredContent.length > 0 ? filteredContent : [{ type: 'text', text: '.' }]
+                    };
+                }
+                return msg;
+            });
+
+            if (prunedCount > 0) {
+                logger.info(`[RequestConverter] 🧹 Pruned ${prunedCount} historical thinking blocks (~${Math.round(prunedChars / 3)} tokens saved) to keep context under 1M limit`);
+            }
+        }
+    }
+
     if (isGeminiModel && isThinking && needsThinkingRecovery(messages)) {
         logger.debug('[RequestConverter] Applying thinking recovery for Gemini');
         processedMessages = closeToolLoopForThinking(messages, 'gemini');
@@ -287,11 +334,15 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     }
 
     // Filter out Claude Code's broken internal WebSearch tool (which fails on custom proxies)
-    // so the model directly and exclusively uses the working MCP web_search tool!
+    // and the synthetic DeferredToolPlaceholder sentinel (never meant to be called by models).
     const filteredTools = tools ? tools.filter(tool => {
         const name = tool.name || tool.function?.name || '';
         if (name === 'WebSearch' || name === 'web_search_builtin') {
             logger.info('[RequestConverter] 🛡️ Filtered broken internal WebSearch tool -> forcing MCP web_search');
+            return false;
+        }
+        if (name === 'DeferredToolPlaceholder') {
+            logger.debug('[RequestConverter] 🛡️ Filtered synthetic DeferredToolPlaceholder stub tool');
             return false;
         }
         return true;
@@ -359,5 +410,42 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
         googleRequest.generationConfig.maxOutputTokens = GEMINI_MAX_OUTPUT_TOKENS;
     }
 
+    // [CRITICAL FIX] Ensure valid turn sequence for Gemini models:
+    // Gemini API strictly enforces:
+    // "Please ensure that function call turn comes immediately after a user turn or after a function response turn."
+    // 1. If history was truncated/compacted and starts with a model turn containing functionCall, prepend a synthetic user turn.
+    // 2. If any subsequent model turn containing functionCall is not preceded by a user turn, insert a synthetic user bridge turn.
+    if (isGeminiModel && googleRequest.contents.length > 0) {
+        // Fix 1: First turn cannot be a model turn with functionCall
+        if (googleRequest.contents[0].role === 'model') {
+            const firstHasCall = googleRequest.contents[0].parts?.some(p => p && p.functionCall);
+            if (firstHasCall) {
+                logger.info('[RequestConverter] 🛠️ History starts with model functionCall turn after compaction: prepending synthetic user turn');
+                googleRequest.contents.unshift({
+                    role: 'user',
+                    parts: [{ text: '[Context continuation]' }]
+                });
+            }
+        }
+
+        // Fix 2: Ensure any model turn with functionCall is preceded by a user turn
+        for (let i = 1; i < googleRequest.contents.length; i++) {
+            const current = googleRequest.contents[i];
+            const hasCall = current.parts?.some(p => p && p.functionCall);
+            if (hasCall && current.role === 'model') {
+                const prev = googleRequest.contents[i - 1];
+                if (prev.role !== 'user') {
+                    logger.info(`[RequestConverter] 🛠️ Model functionCall at turn ${i} preceded by non-user turn (${prev.role}): inserting synthetic user bridge turn`);
+                    googleRequest.contents.splice(i, 0, {
+                        role: 'user',
+                        parts: [{ text: '[Proceed]' }]
+                    });
+                    i++;
+                }
+            }
+        }
+    }
+
     return googleRequest;
 }
+

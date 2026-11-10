@@ -65,6 +65,10 @@ const HOME_DIR = os.homedir();
 const CONFIG_DIR = path.join(HOME_DIR, '.antigravity-claude-proxy');
 
 const server = app.listen(PORT, HOST, () => {
+    // Disable HTTP server socket timeouts so long-running tasks never get cut off
+    server.timeout = 0;
+    server.keepAliveTimeout = 86400000; // 24 hours
+    server.headersTimeout = 86400000;
     // Get actual bound address
     const address = server.address();
     const boundHost = typeof address === 'string' ? address : address.address;

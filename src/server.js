@@ -10,7 +10,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
 import { sessionRouter } from './cloudcode/session-manager.js';
-import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream } from './providers/router.js';
+import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream, isSubagentRequest, getSubagentUpstream } from './providers/router.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
 
@@ -170,8 +170,19 @@ function parseError(error) {
     } else if (error.message.includes('invalid_request_error') || error.message.includes('INVALID_ARGUMENT')) {
         errorType = 'invalid_request_error';
         statusCode = 400;
-        const msgMatch = error.message.match(/"message":"([^"]+)"/);
-        if (msgMatch) errorMessage = msgMatch[1];
+
+        // Catch Google CloudCode / Gemini token limit exceeded errors and translate to Anthropic's standard format.
+        // Claude Code specifically checks for `/prompt is too long[^0-9]*(\d+)\s*tokens?\s*>(\d+)/i`
+        // to trigger reactive auto-compaction rather than crashing subagents with an unhandled 400 error.
+        const tokenLimitMatch = error.message.match(/exceeds the maximum number of tokens allowed\s*(\d+)/i);
+        if (tokenLimitMatch) {
+            const limit = parseInt(tokenLimitMatch[1], 10);
+            errorMessage = `prompt is too long: ${limit + 1} tokens > ${limit} maximum`;
+            logger.warn(`[Server] 🛡️ Translated upstream token limit error to Anthropic auto-compact format: "${errorMessage}"`);
+        } else {
+            const msgMatch = error.message.match(/"message":"([^"]+)"/);
+            if (msgMatch) errorMessage = msgMatch[1];
+        }
     } else if (error.message.includes('All endpoints failed')) {
         errorType = 'api_error';
         statusCode = 503;
@@ -266,8 +277,10 @@ app.get('/health', async (req, res) => {
 
                 // Skip invalid accounts for quota check
                 if (account.isInvalid) {
-                    const isBanned = account.invalidReason?.toLowerCase().includes('banned') || 
-                                     account.invalidReason?.toLowerCase().includes('terms of service');
+                    const isBanned = account.isBanned ||
+                                     account.invalidReason?.toLowerCase().includes('banned') || 
+                                     account.invalidReason?.toLowerCase().includes('terms of service') ||
+                                     account.invalidReason?.toLowerCase().includes('tos_violation');
                     return {
                         ...baseInfo,
                         status: isBanned ? 'banned' : 'invalid',
@@ -297,6 +310,15 @@ app.get('/health', async (req, res) => {
                         models: formattedQuotas
                     };
                 } catch (error) {
+                    if (error.message?.startsWith('ACCOUNT_BANNED:')) {
+                        accountManager.markInvalid(account.email, 'Account banned — Gemini disabled for Terms of Service violation');
+                        return {
+                            ...baseInfo,
+                            status: 'banned',
+                            error: 'Account banned — Gemini disabled for Terms of Service violation',
+                            models: {}
+                        };
+                    }
                     return {
                         ...baseInfo,
                         status: 'error',
@@ -363,10 +385,15 @@ app.get('/account-limits', async (req, res) => {
             allAccounts.map(async (account) => {
                 // Skip invalid accounts
                 if (account.isInvalid) {
+                    const isBanned = account.isBanned ||
+                                     account.invalidReason?.toLowerCase().includes('banned') || 
+                                     account.invalidReason?.toLowerCase().includes('terms of service') ||
+                                     account.invalidReason?.toLowerCase().includes('tos_violation');
                     return {
                         email: account.email,
-                        status: 'invalid',
+                        status: isBanned ? 'banned' : 'invalid',
                         error: account.invalidReason,
+                        subscription: account.subscription || { tier: 'unknown', projectId: null },
                         models: {}
                     };
                 }
@@ -597,9 +624,15 @@ app.get('/account-limits', async (req, res) => {
             accounts: accountLimits.map(acc => {
                 // Merge quota data with account metadata
                 const metadata = accountMetadataMap.get(acc.email) || {};
+                const isBanned = metadata.isBanned ||
+                                 acc.status === 'banned' ||
+                                 metadata.invalidReason?.toLowerCase().includes('banned') ||
+                                 metadata.invalidReason?.toLowerCase().includes('terms of service') ||
+                                 metadata.invalidReason?.toLowerCase().includes('tos_violation');
                 return {
                     email: acc.email,
-                    status: acc.status,
+                    status: isBanned ? 'banned' : acc.status,
+                    isBanned: isBanned || undefined,
                     error: acc.error || null,
                     // Include metadata from AccountManager (WebUI needs these)
                     source: metadata.source || 'unknown',
@@ -809,8 +842,21 @@ app.post('/v1/messages', async (req, res) => {
         // Resolve model mapping if configured or use built-in aliases
         let requestedModel = model || 'gemini-3.8-flash-tiered';
 
-        // 1. Dynamic Upstream Provider Check (e.g. CheaperInference for GLM / Qwen / etc.)
-        const customUpstream = findUpstreamForModel(requestedModel);
+        // 1. Check Subagent Dedicated Router
+        let targetUpstream = null;
+        if (isSubagentRequest(req)) {
+            const subagentUpstream = getSubagentUpstream();
+            if (subagentUpstream) {
+                targetUpstream = subagentUpstream;
+                if (subagentUpstream.overrideModel) {
+                    requestedModel = subagentUpstream.overrideModel;
+                }
+                logger.info(`[API] 🤖 Routing subagent to upstream "${subagentUpstream.name}" (model=${requestedModel})`);
+            }
+        }
+
+        // 2. Dynamic Upstream Provider Check (e.g. Strata for strata*/swift*, CheaperInference for GLM / Qwen / etc.)
+        const customUpstream = targetUpstream || findUpstreamForModel(requestedModel);
         if (customUpstream) {
             if (!messages || !Array.isArray(messages)) {
                 return res.status(400).json({
@@ -877,11 +923,35 @@ app.post('/v1/messages', async (req, res) => {
                 } catch (error) {
                     if (!res.headersSent) {
                         logger.error(`[API] ❌ Upstream error before headers sent:`, error.message);
-                        return res.status(500).json({
+                        
+                        // Check if upstream threw a context length / prompt too long error
+                        const errMsg = error.message || '';
+                        let statusCode = 500;
+                        let errorType = 'api_error';
+                        let formattedMessage = errMsg;
+
+                        if (
+                            errMsg.includes('context window') ||
+                            errMsg.includes('prompt is too long') ||
+                            errMsg.includes('leaves no room to answer') ||
+                            errMsg.includes('request exceeds')
+                        ) {
+                            statusCode = 400;
+                            errorType = 'invalid_request_error';
+                            // Extract token counts if available or format standard Anthropic string
+                            const tokensMatch = errMsg.match(/prompt\s*\((\d+)\s*tokens?\).*context\s*\((\d+)\)/i);
+                            if (tokensMatch) {
+                                formattedMessage = `prompt is too long: ${tokensMatch[1]} tokens > ${tokensMatch[2]} maximum`;
+                            } else {
+                                formattedMessage = `prompt is too long: request exceeds the context window limit`;
+                            }
+                        }
+
+                        return res.status(statusCode).json({
                             type: 'error',
                             error: {
-                                type: 'api_error',
-                                message: error.message
+                                type: errorType,
+                                message: formattedMessage
                             }
                         });
                     } else {
@@ -907,32 +977,50 @@ app.post('/v1/messages', async (req, res) => {
             }
         }
         const sessionKey = extractSessionKey(req.body);
+        // Strip Claude Code context suffix like "[1m]" if present
+        requestedModel = requestedModel.replace(/\[\d+[mk]\]$/i, '');
+
         const modelMapping = config.modelMapping || {};
         if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
-        } else if (requestedModel === 'claude-low' || requestedModel === 'claude-sonnet-low') {
-            requestedModel = 'claude-sonnet-4-6';
+        } else if (
+            requestedModel === 'claude-sonnet-5-5-low' ||
+            requestedModel === 'claude-low' ||
+            requestedModel === 'claude-sonnet-low'
+        ) {
+            requestedModel = 'claude-sonnet-5-5-low';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'claude-med' || requestedModel === 'claude-medium' || requestedModel === 'claude-sonnet-medium' || requestedModel === 'claude-sonnet-med') {
-            requestedModel = 'claude-sonnet-4-6';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-        } else if (requestedModel === 'claude-high' || requestedModel === 'claude-sonnet-high') {
-            requestedModel = 'claude-sonnet-4-6';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
-        } else if (requestedModel === 'claude-opus-low') {
-            requestedModel = 'claude-opus-4-6-thinking';
-            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
-        } else if (requestedModel === 'claude-opus-med' || requestedModel === 'claude-opus-medium') {
-            requestedModel = 'claude-opus-4-6-thinking';
+        } else if (
+            requestedModel === 'claude-sonnet-5-5-medium' ||
+            requestedModel === 'claude-med' ||
+            requestedModel === 'claude-medium' ||
+            requestedModel === 'claude-sonnet-medium' ||
+            requestedModel === 'claude-sonnet-med'
+        ) {
+            requestedModel = 'claude-sonnet-5-5-medium';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
         } else if (
+            requestedModel === 'claude-sonnet-5-5-high' ||
+            requestedModel === 'claude-high' ||
+            requestedModel === 'claude-sonnet-high'
+        ) {
+            requestedModel = 'claude-sonnet-5-5-high';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (requestedModel === 'claude-opus-5-5-low' || requestedModel === 'claude-opus-low') {
+            requestedModel = 'claude-opus-5-5-low';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (requestedModel === 'claude-opus-5-5-medium' || requestedModel === 'claude-opus-med' || requestedModel === 'claude-opus-medium') {
+            requestedModel = 'claude-opus-5-5-medium';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+        } else if (
+            requestedModel === 'claude-opus-5-5-high' ||
             requestedModel.startsWith('claude-opus') || 
             requestedModel.includes('opus')
         ) {
-            // Route Claude Opus requests to Antigravity claude-opus-4-6-thinking
-            requestedModel = 'claude-opus-4-6-thinking';
+            // Route Claude Opus requests to Antigravity claude-opus-5-5-high
+            requestedModel = 'claude-opus-5-5-high';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
         } else if (
             requestedModel.startsWith('claude-sonnet') || 
@@ -945,8 +1033,31 @@ app.post('/v1/messages', async (req, res) => {
             requestedModel.includes('haiku') ||
             requestedModel === 'claude'
         ) {
-            // Route Claude Sonnet / Haiku requests to Antigravity claude-sonnet-4-6
-            requestedModel = 'claude-sonnet-4-6';
+            // Route Claude Sonnet (including 4.6) / Haiku requests to Antigravity claude-sonnet-5-5-low
+            requestedModel = 'claude-sonnet-5-5-low';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (
+            requestedModel === 'gemini-4-argon-low' ||
+            requestedModel === 'argon-low'
+        ) {
+            requestedModel = 'gemini-4-argon-low';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (
+            requestedModel === 'gemini-4-argon-medium' ||
+            requestedModel === 'gemini-4-argon-med' ||
+            requestedModel === 'argon-medium' ||
+            requestedModel === 'argon-med'
+        ) {
+            requestedModel = 'gemini-4-argon-medium';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+        } else if (
+            requestedModel === 'gemini-4-argon-high' ||
+            requestedModel === 'gemini-4-argon' ||
+            requestedModel === 'argon-high' ||
+            requestedModel === 'argon'
+        ) {
+            requestedModel = 'gemini-4-argon-high';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
         } else if (modelSplitter.isFlashCandidate(requestedModel)) {
             // Configure thinking budget based on requested thinking variant if not explicitly set
             if (!req.body.thinking) {

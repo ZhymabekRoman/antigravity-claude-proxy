@@ -32,6 +32,85 @@ function matchPattern(pattern, model) {
 }
 
 /**
+ * Determine if an incoming request originated from a subagent
+ * @param {Object} req Express request object
+ * @returns {boolean}
+ */
+export function isSubagentRequest(req) {
+    if (!req) return false;
+
+    // 0. Explicit main session guard
+    const querySource = req.body?.querySource;
+    if (typeof querySource === 'string' && (querySource.startsWith('repl_main_thread') || querySource === 'main')) {
+        return false;
+    }
+
+    // 1. Direct querySource check in request body (subagents start with "agent:")
+    if (typeof querySource === 'string' && querySource.startsWith('agent:')) {
+        return true;
+    }
+
+    // 2. Billing / attribution header check (where Claude Code sets cc_is_subagent=true)
+    const billingHeader = req.headers?.['x-anthropic-billing-header'] || '';
+    if (billingHeader.includes('cc_is_subagent=true')) {
+        return true;
+    }
+
+    // 3. Precise system prompt markers (tags injected strictly for subagents/sidechains)
+    const system = req.body?.system;
+    if (system) {
+        const sysStr = typeof system === 'string' ? system : JSON.stringify(system);
+        if (
+            sysStr.includes('cc_is_subagent=true') ||
+            sysStr.includes('<observed_from_primary_session>')
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Get configured subagent upstream if enabled
+ * @returns {{ name: string, config: Object, overrideModel?: string } | null}
+ */
+export function getSubagentUpstream() {
+    const subagentConfig = config.subagentRouting;
+    if (!subagentConfig || subagentConfig.enabled === false) {
+        return null;
+    }
+
+    // If an upstream name is referenced
+    if (subagentConfig.upstream && config.upstreams?.[subagentConfig.upstream]) {
+        const upstream = config.upstreams[subagentConfig.upstream];
+        if (upstream.enabled !== false) {
+            return {
+                name: subagentConfig.upstream,
+                config: upstream,
+                overrideModel: subagentConfig.model || undefined
+            };
+        }
+    }
+
+    // If configured inline with baseUrl and apiKey
+    if (subagentConfig.baseUrl) {
+        return {
+            name: 'subagent-router',
+            config: {
+                type: 'anthropic-pass-through',
+                baseUrl: subagentConfig.baseUrl,
+                apiKey: subagentConfig.apiKey || '',
+                enabled: true
+            },
+            overrideModel: subagentConfig.model || undefined
+        };
+    }
+
+    return null;
+}
+
+/**
  * Find matching upstream provider for the given model
  * @param {string} rawModel - Model name requested by client
  * @returns {{ name: string, config: Object } | null} Matching upstream or null

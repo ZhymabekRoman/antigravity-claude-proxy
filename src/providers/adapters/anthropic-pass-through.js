@@ -34,6 +34,15 @@ function buildUpstreamPayload(anthropicRequest, targetModel) {
         payload.max_tokens = 4096;
     }
 
+    // Strip synthetic DeferredToolPlaceholder sentinel and broken built-in WebSearch
+    // so non-Anthropic pass-through backends (Strata / llama.cpp / OpenRouter) never expose them as callable tools.
+    if (Array.isArray(payload.tools)) {
+        payload.tools = payload.tools.filter(tool => {
+            const name = tool.name || tool.function?.name || '';
+            return name !== 'DeferredToolPlaceholder' && name !== 'WebSearch' && name !== 'web_search_builtin';
+        });
+    }
+
     return payload;
 }
 
@@ -45,7 +54,7 @@ function buildUpstreamPayload(anthropicRequest, targetModel) {
  * @yields {Object} Anthropic SSE event objects
  */
 export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConfig) {
-    const targetModel = cleanModelName(anthropicRequest.model);
+    const targetModel = upstreamConfig.targetModel || cleanModelName(anthropicRequest.model);
     const payload = buildUpstreamPayload(anthropicRequest, targetModel);
     payload.stream = true;
 
@@ -138,7 +147,7 @@ export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConf
  * @returns {Promise<Object>} Anthropic Messages response object
  */
 export async function sendAnthropicPassThrough(anthropicRequest, upstreamConfig) {
-    const targetModel = cleanModelName(anthropicRequest.model);
+    const targetModel = upstreamConfig.targetModel || cleanModelName(anthropicRequest.model);
     const payload = buildUpstreamPayload(anthropicRequest, targetModel);
     payload.stream = false;
 

@@ -148,7 +148,9 @@ export function extractVerificationUrl(errorText) {
  */
 export function isAccountBanned(errorText) {
     const lower = (errorText || '').toLowerCase();
-    return lower.includes('has been disabled') && lower.includes('violation of terms of service');
+    return lower.includes('tos_violation') ||
+        lower.includes('account_banned') ||
+        (lower.includes('disabled') && (lower.includes('violation of terms of service') || lower.includes('terms of service')));
 }
 
 /**

@@ -34,6 +34,7 @@ const DEFAULT_CONFIG = {
     webuiPassword: '',
     debug: false,
     devMode: false,
+    dumpPayloads: false, // Set to true to dump request/response bodies to /tmp/proxy-debug
     logLevel: 'info',
     maxRetries: 5,
     retryBaseMs: 1000,
@@ -60,6 +61,14 @@ const DEFAULT_CONFIG = {
         enabled: false,
         gemini37Weight: 60,
         gemini38Weight: 40
+    },
+    // Dedicated routing for Claude Code subagents
+    subagentRouting: {
+        enabled: false,
+        upstream: '', // Name of upstream in `upstreams` OR specify inline baseUrl/apiKey
+        baseUrl: '',  // e.g. "https://api.your-router.com"
+        apiKey: '',
+        model: ''     // Optional model override, e.g. "claude-3-5-haiku-20241022" or empty to keep requested model
     },
     upstreams: {}, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
     modelMapping: {},
@@ -136,6 +145,9 @@ function loadConfig() {
         if (process.env.WEBUI_PASSWORD) config.webuiPassword = process.env.WEBUI_PASSWORD;
         if (process.env.DEBUG === 'true') config.debug = true;
         if (process.env.DEV_MODE === 'true') config.devMode = true;
+        if (process.env.DUMP_PAYLOADS !== undefined) {
+            config.dumpPayloads = process.env.DUMP_PAYLOADS === 'true';
+        }
         if (process.env.REROUTE_38_TO_37 !== undefined) {
             config.reroute38To37 = process.env.REROUTE_38_TO_37 === 'true';
         }

@@ -447,11 +447,15 @@ function messageHasValidThinking(message) {
     const content = message.content || message.parts || [];
     if (!Array.isArray(content)) return false;
     return content.some(block => {
-        if (!isThinkingPart(block)) return false;
-        // Check for valid signature (Anthropic style)
-        if (block.signature && block.signature.length >= MIN_SIGNATURE_LENGTH) return true;
-        // Check for thoughtSignature (Gemini style on functionCall)
-        if (block.thoughtSignature && block.thoughtSignature.length >= MIN_SIGNATURE_LENGTH) return true;
+        // Gemini attaches thoughtSignature directly to tool_use / functionCall blocks
+        if (block.thoughtSignature && typeof block.thoughtSignature === 'string' && block.thoughtSignature.length >= MIN_SIGNATURE_LENGTH) {
+            return true;
+        }
+        // Anthropic style thinking blocks
+        if (isThinkingPart(block)) {
+            if (block.signature && typeof block.signature === 'string' && block.signature.length >= MIN_SIGNATURE_LENGTH) return true;
+            if (block.thoughtSignature && typeof block.thoughtSignature === 'string' && block.thoughtSignature.length >= MIN_SIGNATURE_LENGTH) return true;
+        }
         return false;
     });
 }
@@ -674,6 +678,13 @@ export function closeToolLoopForThinking(messages, targetFamily = null) {
 
         logger.debug('[ThinkingUtils] Applied thinking recovery for interrupted tool');
     } else if (state.inToolLoop) {
+        // If target family is Gemini, do not inject synthetic messages into healthy or recoverable turns.
+        // Google natively accepts functionResponse without needing synthetic text.
+        if (targetFamily === 'gemini') {
+            logger.debug('[ThinkingUtils] Gemini tool loop: relying on native turn structure and skip_thought_signature_validator without synthetic turn injection');
+            return modified;
+        }
+
         // For tool loops: add synthetic messages to close the loop
         const syntheticText = state.toolResultCount === 1
             ? '[Tool execution completed.]'

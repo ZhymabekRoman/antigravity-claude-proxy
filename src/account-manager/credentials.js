@@ -81,8 +81,8 @@ export async function getTokenForAccount(account, tokenCache, onInvalid, onSave)
                 authMethod: account.authMethod
             });
             token = tokens.accessToken;
-            // Clear invalid flag on success
-            if (account.isInvalid) {
+            // Clear invalid flag on success (unless permanently banned)
+            if (account.isInvalid && !account.isBanned) {
                 account.isInvalid = false;
                 account.invalidReason = null;
                 if (onSave) await onSave();

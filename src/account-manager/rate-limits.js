@@ -190,7 +190,11 @@ export function markInvalid(accounts, email, reason = 'Unknown error', verifyUrl
     const account = accounts.find(a => a.email === email);
     if (!account) return false;
 
+    const lowerReason = (reason || '').toLowerCase();
+    const isBanned = lowerReason.includes('banned') || lowerReason.includes('terms of service') || lowerReason.includes('tos_violation');
+
     account.isInvalid = true;
+    account.isBanned = isBanned || account.isBanned || false;
     account.invalidReason = reason;
     account.invalidAt = Date.now();
     account.verifyUrl = verifyUrl || null;
@@ -225,6 +229,7 @@ export function clearInvalid(accounts, email) {
     if (!account) return false;
 
     account.isInvalid = false;
+    account.isBanned = false;
     account.invalidReason = null;
     account.verifyUrl = null;
 

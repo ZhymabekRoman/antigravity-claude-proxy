@@ -293,9 +293,9 @@ export function getModelFamily(modelName) {
  */
 export function isThinkingModel(modelName) {
     const lower = (modelName || '').toLowerCase();
-    // Claude thinking models have "thinking" in the name or are opus / sonnet-4-6
+    // Claude thinking models have "thinking" in the name or are opus / sonnet-4-6 / 5-5
     if (lower.includes('claude')) {
-        if (lower.includes('thinking') || lower.includes('opus') || lower.includes('3-7') || lower.includes('3.7') || lower.includes('4-6') || lower.includes('4.6')) return true;
+        if (lower.includes('thinking') || lower.includes('opus') || lower.includes('3-7') || lower.includes('3.7') || lower.includes('4-6') || lower.includes('4.6') || lower.includes('5-5') || lower.includes('5.5')) return true;
     }
     // Gemini thinking models: explicit "thinking" in name, OR gemini version 3+
     if (lower.includes('gemini')) {
@@ -348,11 +348,20 @@ export const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful a
 
 // Model fallback mapping - maps primary model to fallback when quota exhausted
 export const MODEL_FALLBACK_MAP = {
+    'claude-opus-5-5-high': 'gemini-3.8-flash-tiered',
+    'claude-opus-5-5-medium': 'gemini-3.8-flash-tiered',
+    'claude-opus-5-5-low': 'gemini-3.8-flash-tiered',
+    'claude-sonnet-5-5-high': 'gemini-3.8-flash-tiered',
+    'claude-sonnet-5-5-medium': 'gemini-3.8-flash-tiered',
+    'claude-sonnet-5-5-low': 'gemini-3.8-flash-tiered',
+    'gemini-4-argon-high': 'gemini-3.8-flash-tiered',
+    'gemini-4-argon-medium': 'gemini-3.8-flash-tiered',
+    'gemini-4-argon-low': 'gemini-3.8-flash-tiered',
     'claude-opus-4-6-thinking': 'gemini-3.7-flash-tiered',
     'claude-opus-4-6': 'gemini-3.7-flash-tiered',
     'claude-opus-4-5': 'gemini-3.7-flash-tiered',
-    'claude-sonnet-4-6': 'gemini-3.7-flash-tiered',
-    'claude-sonnet-4-5': 'gemini-3.7-flash-tiered',
+    'claude-sonnet-4-6': 'claude-sonnet-5-5-low',
+    'claude-sonnet-4-5': 'claude-sonnet-5-5-low',
     'claude-haiku-4-5': 'gemini-3.7-flash-tiered',
     'claude-haiku-4-5-20251001': 'gemini-3.7-flash-tiered',
     'gemini-3.1-pro-high': 'gemini-3.7-flash-tiered',
@@ -372,7 +381,7 @@ export const MODEL_FALLBACK_MAP = {
 
 // Default test models for each family (used by test suite)
 export const TEST_MODELS = {
-    claude: 'claude-sonnet-4-6',
+    claude: 'claude-sonnet-5-5-low',
     gemini: 'gemini-3.8-flash-low'
 };
 
@@ -383,11 +392,11 @@ export const DEFAULT_PRESETS = [
         config: {
             ANTHROPIC_AUTH_TOKEN: 'test',
             ANTHROPIC_BASE_URL: 'http://localhost:8080',
-            ANTHROPIC_MODEL: 'claude-opus-4-6-thinking',
-            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6-thinking',
-            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
-            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-4-6',
-            CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-4-6',
+            ANTHROPIC_MODEL: 'claude-opus-5-5-high',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5-high',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5-low',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-5-5-low',
+            CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-5-5-low',
             ENABLE_EXPERIMENTAL_MCP_CLI: 'true'
         }
     },
@@ -409,9 +418,9 @@ export const DEFAULT_PRESETS = [
         config: {
             ANTHROPIC_AUTH_TOKEN: 'test',
             ANTHROPIC_BASE_URL: 'http://localhost:8080',
-            ANTHROPIC_MODEL: 'claude-sonnet-4-6',
-            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6-thinking',
-            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+            ANTHROPIC_MODEL: 'claude-sonnet-5-5-low',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5-high',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5-low',
             ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-3.8-flash-low',
             CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-3.8-flash-low',
             ENABLE_EXPERIMENTAL_MCP_CLI: 'true'

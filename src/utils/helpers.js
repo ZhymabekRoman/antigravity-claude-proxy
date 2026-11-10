@@ -12,6 +12,8 @@ const globalDispatcher = new Agent({
     keepAliveMaxTimeout: 600000,  // 10 minutes max socket lifetime
     pipelining: 1,
     connections: 50,              // Pool size for multi-account concurrent requests
+    headersTimeout: 0,            // Disable headers timeout for long-running models (e.g. Strata prefill)
+    bodyTimeout: 0,               // Disable body timeout
     connect: {
         timeout: 10000            // 10 second connect timeout
     }

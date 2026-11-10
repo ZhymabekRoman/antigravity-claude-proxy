@@ -26,16 +26,29 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
         const configData = await readFile(configPath, 'utf-8');
         const config = JSON.parse(configData);
 
-        const accounts = (config.accounts || []).map(acc => ({
-            ...acc,
-            lastUsed: acc.lastUsed || null,
-            enabled: acc.enabled !== false, // Default to true if not specified
-            // Reset invalid flag on startup - give accounts a fresh chance
+        const accounts = (config.accounts || []).map(acc => {
+            const isBanned = Boolean(acc.isBanned ||
+                (acc.invalidReason && (
+                    acc.invalidReason.toLowerCase().includes('banned') ||
+                    acc.invalidReason.toLowerCase().includes('terms of service') ||
+                    acc.invalidReason.toLowerCase().includes('tos_violation')
+                ))
+            );
+            // Reset invalid flag on startup for transient errors - give accounts a fresh chance
             // Verification errors (verifyUrl) auto-clear if older than 30 minutes (transient Google challenges)
-            isInvalid: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? (acc.isInvalid || false) : false,
-            invalidReason: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? (acc.invalidReason || null) : null,
-            verifyUrl: (acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000))) ? acc.verifyUrl : null,
-            modelRateLimits: acc.modelRateLimits || {},
+            // Permanent ToS bans (isBanned) NEVER auto-clear
+            const hasRecentVerification = Boolean(acc.verifyUrl && (!acc.invalidAt || (Date.now() - acc.invalidAt < 30 * 60 * 1000)));
+            const shouldRemainInvalid = isBanned || hasRecentVerification;
+
+            return {
+                ...acc,
+                lastUsed: acc.lastUsed || null,
+                enabled: acc.enabled !== false, // Default to true if not specified
+                isBanned: isBanned,
+                isInvalid: shouldRemainInvalid ? (acc.isInvalid || false) : false,
+                invalidReason: shouldRemainInvalid ? (acc.invalidReason || null) : null,
+                verifyUrl: hasRecentVerification ? acc.verifyUrl : null,
+                modelRateLimits: acc.modelRateLimits || {},
             // New fields for subscription and quota tracking
             subscription: acc.subscription || { tier: 'unknown', projectId: null, detectedAt: null },
             quota: acc.quota || { models: {}, lastChecked: null },
@@ -46,7 +59,8 @@ export async function loadAccounts(configPath = ACCOUNT_CONFIG_PATH) {
             spendCapUsd: typeof acc.spendCapUsd === 'number' ? acc.spendCapUsd : (acc.spendCapUsd === null ? null : undefined),
             currentSpendUsd: typeof acc.currentSpendUsd === 'number' ? acc.currentSpendUsd : 0,
             spendStats: acc.spendStats || null
-        }));
+        };
+    });
 
         const settings = config.settings || {};
         let activeIndex = config.activeIndex || 0;
@@ -144,6 +158,7 @@ export async function saveAccounts(configPath, accounts, settings, activeIndex) 
                 apiKey: (acc.source === 'manual' || acc.source === 'gemini-byok') ? (acc.apiKey || acc.byokApiKey) : undefined,
                 projectId: acc.projectId || undefined,
                 addedAt: acc.addedAt || undefined,
+                isBanned: acc.isBanned ? true : undefined,
                 isInvalid: acc.isInvalid || false,
                 invalidReason: acc.invalidReason || null,
                 verifyUrl: acc.verifyUrl || null,

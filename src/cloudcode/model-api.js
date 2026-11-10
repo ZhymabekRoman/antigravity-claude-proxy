@@ -15,6 +15,7 @@ import {
 } from '../constants.js';
 import { logger } from '../utils/logger.js';
 import { throttledFetch } from '../utils/helpers.js';
+import { isAccountBanned } from './rate-limit-state.js';
 
 // Model validation cache
 const modelCache = {
@@ -97,17 +98,17 @@ export async function fetchAvailableModels(token, projectId = null) {
                 const errorText = await response.text();
                 logger.warn(`[CloudCode] fetchAvailableModels error at ${endpoint}: ${response.status}`);
                 // Detect permanent ToS ban — no point trying other endpoints
-                if (response.status === 403) {
-                    const lower = (errorText || '').toLowerCase();
-                    if (lower.includes('has been disabled') && lower.includes('violation of terms of service')) {
-                        throw new Error(`ACCOUNT_BANNED: ${errorText}`);
-                    }
+                if (response.status === 403 && isAccountBanned(errorText)) {
+                    throw new Error(`ACCOUNT_BANNED: ${errorText}`);
                 }
                 continue;
             }
 
             return await response.json();
         } catch (error) {
+            if (error.message?.startsWith('ACCOUNT_BANNED:')) {
+                throw error;
+            }
             logger.warn(`[CloudCode] fetchAvailableModels failed at ${endpoint}:`, error.message);
         }
     }
@@ -199,11 +200,8 @@ export async function getSubscriptionTier(token) {
                 const errorText = await response.text().catch(() => '');
                 logger.warn(`[CloudCode] loadCodeAssist error at ${endpoint}: ${response.status}`);
                 // Detect permanent ToS ban — no point trying other endpoints
-                if (response.status === 403) {
-                    const lower = (errorText || '').toLowerCase();
-                    if (lower.includes('has been disabled') && lower.includes('violation of terms of service')) {
-                        throw new Error(`ACCOUNT_BANNED: ${errorText}`);
-                    }
+                if (response.status === 403 && isAccountBanned(errorText)) {
+                    throw new Error(`ACCOUNT_BANNED: ${errorText}`);
                 }
                 continue;
             }
@@ -263,6 +261,9 @@ export async function getSubscriptionTier(token) {
 
             return { tier, projectId };
         } catch (error) {
+            if (error.message?.startsWith('ACCOUNT_BANNED:')) {
+                throw error;
+            }
             logger.warn(`[CloudCode] loadCodeAssist failed at ${endpoint}:`, error.message);
         }
     }

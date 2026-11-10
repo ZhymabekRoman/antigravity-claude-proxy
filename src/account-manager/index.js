@@ -116,6 +116,7 @@ export class AccountManager {
         // Probe healthy accounts, plus accounts stuck in transient VALIDATION_REQUIRED for > 15 mins
         const accountsToSync = this.#accounts.filter(a => {
             if (a.enabled === false) return false;
+            if (a.isBanned) return false;
             if (!a.isInvalid) return true;
             // Optimistic probing for validation challenges after 15 minutes
             return a.verifyUrl && a.invalidAt && (now - a.invalidAt > 15 * 60 * 1000);
@@ -163,7 +164,12 @@ export class AccountManager {
                     }
                 }
             } catch (err) {
-                logger.debug(`[AccountManager] Quota sync skipped for ${account.email}: ${err.message}`);
+                if (err.message?.startsWith('ACCOUNT_BANNED:')) {
+                    logger.warn(`[AccountManager] Account ${account.email} detected as BANNED during quota sync.`);
+                    this.markInvalid(account.email, 'Account banned — Gemini disabled for Terms of Service violation');
+                } else {
+                    logger.debug(`[AccountManager] Quota sync skipped for ${account.email}: ${err.message}`);
+                }
             }
         }
     }
@@ -533,6 +539,7 @@ export class AccountManager {
                 projectId: a.projectId || null,
                 gcpProject: a.gcpProject || null,
                 modelRateLimits: a.modelRateLimits || {},
+                isBanned: a.isBanned || false,
                 isInvalid: a.isInvalid || false,
                 invalidReason: a.invalidReason || null,
                 verifyUrl: a.verifyUrl || null,
