@@ -77,7 +77,7 @@ const DEFAULT_CONFIG = {
         baseUrl: 'http://localhost:4141',
         apiKey: 'test',
         always: false,                       // Route EVERY request to Copilot, bypassing Google (env COPILOT_ALWAYS=true)
-        maxPromptTokens: 180000              // Skip fallback when prompt is larger than Copilot's window
+        maxPromptTokens: 900000              // Skip fallback when prompt is larger than Copilot's window (Gemini on Copilot verified >530k)
         // Model is hardcoded to gemini-3.8-flash (see providers/copilot-fallback.js)
     },
     upstreams: {
@@ -90,6 +90,7 @@ const DEFAULT_CONFIG = {
             stripPrefix: 'copilot/',
             targetModel: 'gemini-3.8-flash',  // Hardcoded gemini-3.8-flash
             sanitizeForCopilot: true,
+            retries: 2,                      // Retry intermittent 5xx from the bridge
             enabled: true
         }
     }, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)

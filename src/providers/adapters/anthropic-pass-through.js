@@ -34,6 +34,29 @@ function resolveTargetModel(anthropicRequest, upstreamConfig) {
 }
 
 /**
+ * fetch with optional retry on 5xx / network errors (upstreamConfig.retries, default 0).
+ * Used for flaky bridges (e.g. copilot-api returning an intermittent empty completion -> 500).
+ */
+async function fetchWithRetry(url, options, upstreamConfig) {
+    const retries = Number.isInteger(upstreamConfig?.retries) ? upstreamConfig.retries : 0;
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const res = await undiciFetch(url, options);
+            if (res.status < 500 || attempt === retries) return res;
+            logger.warn(`[Upstream][PassThrough] ⚠️ HTTP ${res.status} from ${url}, retry ${attempt + 1}/${retries}`);
+            try { await res.text(); } catch {}
+        } catch (err) {
+            lastErr = err;
+            if (attempt === retries) throw err;
+            logger.warn(`[Upstream][PassThrough] ⚠️ ${err.message}, retry ${attempt + 1}/${retries}`);
+        }
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+    }
+    throw lastErr;
+}
+
+/**
  * Build request payload for Anthropic-compatible upstream
  * @param {Object} anthropicRequest - Client request
  * @param {string} targetModel - Resolved model name
@@ -86,15 +109,19 @@ export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConf
     logger.info(`[Upstream][PassThrough] 🌐 Dispatching stream request -> ${url} (model: ${targetModel})`);
 
     const tStart = Date.now();
-    const response = await undiciFetch(url, {
+    const response = await fetchWithRetry(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload)
-    });
+    }, upstreamConfig);
 
     if (!response.ok) {
         const errorText = await response.text().catch(() => '');
         logger.error(`[Upstream][PassThrough] ❌ Error HTTP ${response.status} from ${baseUrl}: ${errorText.slice(0, 300)}`);
+        try {
+            const tail = (payload.messages || []).slice(-4).map(m => `${m.role}:${Array.isArray(m.content) ? m.content.map(b => b.type + (b.type === 'text' ? `(${String(b.text || '').length})` : '')).join('+') : 'str(' + String(m.content).length + ')'}`);
+            logger.error(`[Upstream][PassThrough] 🔎 400 payload tail: ${tail.join(' | ')}`);
+        } catch {}
         throw new Error(`Upstream API Error (${response.status}): ${errorText}`);
     }
 
@@ -178,15 +205,19 @@ export async function sendAnthropicPassThrough(anthropicRequest, upstreamConfig)
 
     logger.info(`[Upstream][PassThrough] 🌐 Dispatching non-streaming request -> ${url} (model: ${targetModel})`);
 
-    const response = await undiciFetch(url, {
+    const response = await fetchWithRetry(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload)
-    });
+    }, upstreamConfig);
 
     if (!response.ok) {
         const errorText = await response.text().catch(() => '');
         logger.error(`[Upstream][PassThrough] ❌ Error HTTP ${response.status} from ${baseUrl}: ${errorText.slice(0, 300)}`);
+        try {
+            const tail = (payload.messages || []).slice(-4).map(m => `${m.role}:${Array.isArray(m.content) ? m.content.map(b => b.type + (b.type === 'text' ? `(${String(b.text || '').length})` : '')).join('+') : 'str(' + String(m.content).length + ')'}`);
+            logger.error(`[Upstream][PassThrough] 🔎 400 payload tail: ${tail.join(' | ')}`);
+        } catch {}
         throw new Error(`Upstream API Error (${response.status}): ${errorText}`);
     }
 

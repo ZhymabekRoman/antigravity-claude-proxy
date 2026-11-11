@@ -150,6 +150,20 @@ mountWebUI(app, __dirname, accountManager);
 /**
  * Parse error message to extract error type, status code, and user-friendly message
  */
+/**
+ * Map "Upstream API Error (NNN): ..." thrown by pass-through upstreams to a proper HTTP status,
+ * so client-side 4xx errors are NOT reported as retryable 500s (Claude Code retries 5xx 10 times).
+ */
+function classifyUpstreamStatus(errMsg) {
+    const m = /Upstream API Error \((\d{3})\)/.exec(errMsg || '');
+    if (!m) return null;
+    const code = parseInt(m[1], 10);
+    if (code === 429) return { statusCode: 429, errorType: 'rate_limit_error' };
+    if (code === 401 || code === 403) return { statusCode: 500, errorType: 'api_error' }; // our creds issue, not the client's
+    if (code >= 400 && code < 500) return { statusCode: 400, errorType: 'invalid_request_error' };
+    return null;
+}
+
 function parseError(error) {
     let errorType = 'api_error';
     let statusCode = 500;
@@ -956,6 +970,11 @@ app.post('/v1/messages', async (req, res) => {
                             }
                         }
 
+                        if (statusCode === 500) {
+                            const cls = classifyUpstreamStatus(errMsg);
+                            if (cls) { statusCode = cls.statusCode; errorType = cls.errorType; }
+                        }
+
                         return res.status(statusCode).json({
                             type: 'error',
                             error: {
@@ -975,10 +994,11 @@ app.post('/v1/messages', async (req, res) => {
                     return res.json(response);
                 } catch (error) {
                     logger.error(`[API] ❌ Upstream error:`, error.message);
-                    return res.status(500).json({
+                    const cls = classifyUpstreamStatus(error.message) || { statusCode: 500, errorType: 'api_error' };
+                    return res.status(cls.statusCode).json({
                         type: 'error',
                         error: {
-                            type: 'api_error',
+                            type: cls.errorType,
                             message: error.message
                         }
                     });

@@ -92,6 +92,7 @@ export function getCopilotUpstream() {
             apiKey: cfg.apiKey || 'test',
             targetModel: COPILOT_MODEL,
             sanitizeForCopilot: true,
+            retries: 2,
             enabled: true
         }
     };
@@ -114,7 +115,17 @@ function estimatePromptTokens(request) {
  * to be consistent when `thinking` is on. Strip them from history and drop the thinking param.
  */
 export function sanitizeForCopilot(request, targetModel) {
-    const messages = (request.messages || []).map(msg => {
+    // Claude Code may inject role:"system" entries inside `messages` (hook context, diagnostics).
+    // That is not valid Anthropic and copilot-api turns it into a broken role order, so convert
+    // them to user messages wrapped in <system-reminder> (merged with the adjacent user turn below).
+    const rawMessages = (request.messages || []).map(msg => {
+        if (msg.role !== 'system') return msg;
+        const text = typeof msg.content === 'string'
+            ? msg.content
+            : (msg.content || []).map(b => (b && b.text) || '').join('\n');
+        return { role: 'user', content: [{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }] };
+    });
+    const messages = rawMessages.map(msg => {
         if (!Array.isArray(msg.content)) return msg;
         const content = msg.content
             .filter(b => b && b.type !== 'thinking' && b.type !== 'redacted_thinking' && !(b.type === 'text' && !String(b.text || '').trim()))
@@ -127,8 +138,26 @@ export function sanitizeForCopilot(request, targetModel) {
             });
         return { ...msg, content: content.length ? content : [{ type: 'text', text: '(no content)' }] };
     });
+    // Merge consecutive same-role messages (stripping blocks can leave user/user or assistant/assistant).
+    const toBlocks = c => typeof c === 'string' ? [{ type: 'text', text: c }] : c;
+    const merged = [];
+    for (const msg of messages) {
+        const prev = merged[merged.length - 1];
+        if (prev && prev.role === msg.role) {
+            prev.content = [...toBlocks(prev.content), ...toBlocks(msg.content)];
+        } else {
+            merged.push({ ...msg });
+        }
+    }
+
+    // Gemini/most backends reject a conversation whose LAST message is from the assistant
+    // (Claude "prefill"). Append a neutral user turn so it ends with a user message.
+    if (merged.length && merged[merged.length - 1].role === 'assistant') {
+        merged.push({ role: 'user', content: [{ type: 'text', text: 'Continue.' }] });
+    }
+
     const { thinking, ...rest } = request;
-    return { ...rest, messages, model: targetModel };
+    return { ...rest, messages: merged, model: targetModel };
 }
 
 /**
@@ -154,7 +183,8 @@ function buildUpstreamConfig(targetModel) {
         type: 'anthropic-pass-through',
         baseUrl: cfg.baseUrl,
         apiKey: cfg.apiKey || 'test',
-        targetModel
+        targetModel,
+        retries: 2
     };
 }
 

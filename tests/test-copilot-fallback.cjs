@@ -19,8 +19,24 @@
     config.copilotFallback.always = true;
     ok(m.isAlwaysCopilot() && m.getCopilotUpstream().config.targetModel === 'gemini-3.8-flash', 'always flag -> gemini-3.8-flash upstream');
     config.copilotFallback.always = false;
-    ok(!m.canFallbackToCopilot({ messages: [{ role: 'user', content: 'x'.repeat(900000) }] }), 'oversized prompt skipped');
+    ok(!m.canFallbackToCopilot({ messages: [{ role: 'user', content: 'x'.repeat(4000000) }] }), 'oversized prompt skipped');
     ok(m.canFallbackToCopilot({ messages: [{ role: 'user', content: 'hi' }] }), 'small prompt allowed');
+
+    const san = m.sanitizeForCopilot({ model: 'x', messages: [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: [{ type: 'text', text: 'prefill' }] }
+    ] }, 'gemini-3.8-flash');
+    ok(san.messages[san.messages.length - 1].role === 'user', 'conversation ending with assistant gets trailing user turn');
+    const san2 = m.sanitizeForCopilot({ model: 'x', messages: [
+        { role: 'user', content: 'a' }, { role: 'user', content: 'b' }
+    ] }, 'gemini-3.8-flash');
+    ok(san2.messages.length === 1, 'consecutive same-role messages merged');
+
+    const san3 = m.sanitizeForCopilot({ model: 'x', messages: [
+        { role: 'user', content: 'a' }, { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' }, { role: 'system', content: 'hook ctx' }
+    ] }, 'gemini-3.8-flash');
+    ok(san3.messages.length === 3 && san3.messages.every(x => x.role !== 'system') && san3.messages[2].role === 'user', 'role:system messages folded into user turn');
 
     config.copilotFallback.enabled = false;
     ok(!m.shouldFallbackToCopilot(new Error('rate-limited')), 'disabled flag respected');
