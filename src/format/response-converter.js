@@ -104,7 +104,7 @@ export function convertGoogleToAnthropic(googleResponse, model) {
     // Note: Antigravity's promptTokenCount is the TOTAL (includes cached),
     // but Anthropic's input_tokens excludes cached. We subtract to match.
     const usageMetadata = response.usageMetadata || {};
-    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 1.0;
     const promptTokens = Math.round((usageMetadata.promptTokenCount || 0) * scale);
     const cachedTokens = Math.round((usageMetadata.cachedContentTokenCount || 0) * scale);
     const outputTokens = Math.round((usageMetadata.candidatesTokenCount || 0) * scale);

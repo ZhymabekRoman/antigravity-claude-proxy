@@ -84,7 +84,7 @@ export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConf
         throw new Error(`Upstream API Error (${response.status}): ${errorText}`);
     }
 
-    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 1.0;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -177,7 +177,7 @@ export async function sendAnthropicPassThrough(anthropicRequest, upstreamConfig)
     }
 
     const data = await response.json();
-    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 1.0;
 
     if (data.usage && scale !== 1.0) {
         if (data.usage.input_tokens != null) data.usage.input_tokens = Math.round(data.usage.input_tokens * scale);

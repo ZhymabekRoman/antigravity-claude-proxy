@@ -63,7 +63,7 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 // chunks only carry { trafficType: "ON_DEMAND" } with no numeric counts.
                 if (innerResponse.usageMetadata) {
                     const um = innerResponse.usageMetadata;
-                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 1.0;
                     if (um.promptTokenCount != null)    inputTokens     = Math.round(um.promptTokenCount * scale);
                     if (um.cachedContentTokenCount != null) cacheReadTokens = Math.round(um.cachedContentTokenCount * scale);
                     // Bug 2 fix: candidatesTokenCount is visible output tokens only.
@@ -660,7 +660,7 @@ export async function* parseGoogleContinuationStream(response, isSideQuestion = 
                 const googleEvent = JSON.parse(jsonText);
                 const innerResponse = googleEvent.response || googleEvent;
                 if (innerResponse.usageMetadata?.candidatesTokenCount) {
-                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 0.95;
+                    const scale = (typeof config?.tokenUsageScale === 'number' && config.tokenUsageScale > 0) ? config.tokenUsageScale : 1.0;
                     outputTokens += Math.round(innerResponse.usageMetadata.candidatesTokenCount * scale);
                 }
 

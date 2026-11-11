@@ -54,7 +54,7 @@ const DEFAULT_CONFIG = {
     maxCapacityRetries: 5,         // Max retries for capacity exhaustion
     switchAccountDelayMs: 5000,    // Delay before switching accounts on rate limit
     capacityBackoffTiersMs: [5000, 10000, 20000, 30000, 60000], // Progressive backoff tiers for capacity exhaustion
-    tokenUsageScale: 0.95, // Scale factor for reported token usage (0.95 = report 5% less context window usage)
+    tokenUsageScale: 1.0, // Scale factor for reported token usage (1.0 = 100% exact upstream Google tokens)
     reroute38To37: false, // Redirect Gemini 3.8 Flash requests to Gemini 3.7 Flash
     vertexFlexMode: true, // Send X-Vertex-AI-LLM-Request-Type: shared & X-Vertex-AI-LLM-Shared-Request-Type: flex on Vertex AI
     modelSplit: {
