@@ -65,6 +65,7 @@ export function shouldFallbackToCopilot(error) {
  */
 export function mapToCopilotModel(requestedModel) {
     const cfg = getCopilotFallbackConfig();
+    if (cfg?.forceModel) return cfg.forceModel;
     const model = cleanModelName(requestedModel || '').toLowerCase();
     const custom = cfg?.modelMap || {};
     if (custom[model]) return custom[model];

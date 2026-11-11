@@ -76,6 +76,7 @@ const DEFAULT_CONFIG = {
         enabled: true,                       // ON by default (env COPILOT_FALLBACK=false to disable)
         baseUrl: 'http://localhost:4141',
         apiKey: 'test',
+        forceModel: 'fusion-standard',       // Always use this Copilot model (set '' to enable per-model mapping)
         defaultModel: 'claude-sonnet-5.5',
         maxPromptTokens: 180000,             // Skip fallback when prompt is larger than Copilot's window
         modelMap: {}                         // Optional explicit map: { "requested-model": "copilot-model" }
@@ -88,6 +89,7 @@ const DEFAULT_CONFIG = {
             apiKey: 'test',
             models: ['copilot/*'],
             stripPrefix: 'copilot/',
+            targetModel: 'fusion-standard',  // Always fusion-standard (remove to pass model name through)
             enabled: true
         }
     }, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
