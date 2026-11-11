@@ -9,6 +9,8 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
+    isAlwaysCopilot,
+    getCopilotUpstream,
     shouldFallbackToCopilot,
     canFallbackToCopilot,
     streamCopilotFallback,
@@ -862,7 +864,8 @@ app.post('/v1/messages', async (req, res) => {
         }
 
         // 2. Dynamic Upstream Provider Check (e.g. Strata for strata*/swift*, CheaperInference for GLM / Qwen / etc.)
-        const customUpstream = targetUpstream || findUpstreamForModel(requestedModel);
+        // Flag: always route to GitHub Copilot (copilot-api, fusion-standard), bypassing Google
+        const customUpstream = targetUpstream || (isAlwaysCopilot() ? getCopilotUpstream() : findUpstreamForModel(requestedModel));
         if (customUpstream) {
             if (!messages || !Array.isArray(messages)) {
                 return res.status(400).json({

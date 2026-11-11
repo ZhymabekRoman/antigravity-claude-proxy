@@ -6,6 +6,7 @@
 
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { sanitizeForCopilot } from './copilot-fallback.js';
 import {
     streamAnthropicPassThrough,
     sendAnthropicPassThrough,
@@ -143,6 +144,7 @@ export function findUpstreamForModel(rawModel) {
  * @yields {Object} SSE events
  */
 export async function* streamCustomUpstream(request, upstream) {
+    if (upstream.config.sanitizeForCopilot) request = sanitizeForCopilot(request, upstream.config.targetModel || request.model);
     const type = upstream.config.type || 'anthropic-pass-through';
 
     switch (type) {
@@ -166,6 +168,7 @@ export async function* streamCustomUpstream(request, upstream) {
  * @returns {Promise<Object>} Anthropic response body
  */
 export async function sendCustomUpstream(request, upstream) {
+    if (upstream.config.sanitizeForCopilot) request = sanitizeForCopilot(request, upstream.config.targetModel || request.model);
     const type = upstream.config.type || 'anthropic-pass-through';
 
     switch (type) {

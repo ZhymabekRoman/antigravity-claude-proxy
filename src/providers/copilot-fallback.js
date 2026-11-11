@@ -17,6 +17,9 @@ import {
     cleanModelName
 } from './adapters/anthropic-pass-through.js';
 
+/** Hardcoded: every Copilot request (fallback, direct, always-mode) uses this model. */
+export const COPILOT_MODEL = 'fusion-standard';
+
 /** Errors that mean "Google side is unavailable" and a fallback makes sense. */
 const FALLBACK_ERROR_PATTERNS = [
     /rate[- ]?limit/i,
@@ -59,22 +62,39 @@ export function shouldFallbackToCopilot(error) {
 }
 
 /**
- * Map a requested (Antigravity-flavoured) model onto a Copilot model id.
- * @param {string} requestedModel
+ * Copilot model for any requested model: hardcoded to fusion-standard for now.
  * @returns {string}
  */
-export function mapToCopilotModel(requestedModel) {
-    const cfg = getCopilotFallbackConfig();
-    if (cfg?.forceModel) return cfg.forceModel;
-    const model = cleanModelName(requestedModel || '').toLowerCase();
-    const custom = cfg?.modelMap || {};
-    if (custom[model]) return custom[model];
+export function mapToCopilotModel() {
+    return COPILOT_MODEL;
+}
 
-    if (model.includes('opus')) return 'claude-opus-5.5';
-    if (model.includes('sonnet')) return 'claude-sonnet-5.5';
-    if (model.includes('haiku')) return 'claude-haiku-5.5';
-    if (model.includes('gemini')) return 'gemini-3.8-flash';
-    return cfg?.defaultModel || 'claude-sonnet-5.5';
+/**
+ * Flag: route EVERY request to Copilot, bypassing Google accounts entirely.
+ * (config.copilotFallback.always or env COPILOT_ALWAYS=true)
+ * @returns {boolean}
+ */
+export function isAlwaysCopilot() {
+    const cfg = config.copilotFallback;
+    return !!(cfg && cfg.always === true && cfg.baseUrl);
+}
+
+/**
+ * Upstream descriptor for "always" mode (same shape as router.findUpstreamForModel result).
+ */
+export function getCopilotUpstream() {
+    const cfg = config.copilotFallback;
+    return {
+        name: 'copilot-always',
+        config: {
+            type: 'anthropic-pass-through',
+            baseUrl: cfg.baseUrl,
+            apiKey: cfg.apiKey || 'test',
+            targetModel: COPILOT_MODEL,
+            sanitizeForCopilot: true,
+            enabled: true
+        }
+    };
 }
 
 /** Rough prompt size estimate (chars / 3.5). Used only to avoid hopeless fallbacks. */
@@ -93,7 +113,7 @@ function estimatePromptTokens(request) {
  * Copilot (Claude) cannot validate Gemini thinking signatures, and requires thinking blocks
  * to be consistent when `thinking` is on. Strip them from history and drop the thinking param.
  */
-function sanitizeForCopilot(request, targetModel) {
+export function sanitizeForCopilot(request, targetModel) {
     const messages = (request.messages || []).map(msg => {
         if (!Array.isArray(msg.content)) return msg;
         const content = msg.content

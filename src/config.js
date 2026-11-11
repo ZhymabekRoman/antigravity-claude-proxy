@@ -76,10 +76,9 @@ const DEFAULT_CONFIG = {
         enabled: true,                       // ON by default (env COPILOT_FALLBACK=false to disable)
         baseUrl: 'http://localhost:4141',
         apiKey: 'test',
-        forceModel: 'fusion-standard',       // Always use this Copilot model (set '' to enable per-model mapping)
-        defaultModel: 'claude-sonnet-5.5',
-        maxPromptTokens: 180000,             // Skip fallback when prompt is larger than Copilot's window
-        modelMap: {}                         // Optional explicit map: { "requested-model": "copilot-model" }
+        always: false,                       // Route EVERY request to Copilot, bypassing Google (env COPILOT_ALWAYS=true)
+        maxPromptTokens: 180000              // Skip fallback when prompt is larger than Copilot's window
+        // Model is hardcoded to fusion-standard (see providers/copilot-fallback.js)
     },
     upstreams: {
         // Directly selectable Copilot upstream: model "copilot/claude-opus-5.5" -> "claude-opus-5.5"
@@ -89,7 +88,8 @@ const DEFAULT_CONFIG = {
             apiKey: 'test',
             models: ['copilot/*'],
             stripPrefix: 'copilot/',
-            targetModel: 'fusion-standard',  // Always fusion-standard (remove to pass model name through)
+            targetModel: 'fusion-standard',  // Hardcoded fusion-standard
+            sanitizeForCopilot: true,
             enabled: true
         }
     }, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
@@ -191,6 +191,10 @@ function loadConfig() {
         if (process.env.COPILOT_FALLBACK !== undefined) {
             config.copilotFallback = config.copilotFallback || {};
             config.copilotFallback.enabled = process.env.COPILOT_FALLBACK !== 'false';
+        }
+        if (process.env.COPILOT_ALWAYS !== undefined) {
+            config.copilotFallback = config.copilotFallback || {};
+            config.copilotFallback.always = process.env.COPILOT_ALWAYS === 'true';
         }
         if (process.env.COPILOT_API_URL) {
             config.copilotFallback = config.copilotFallback || {};

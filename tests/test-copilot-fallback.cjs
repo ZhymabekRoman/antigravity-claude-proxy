@@ -12,13 +12,13 @@
     ok(m.shouldFallbackToCopilot(new Error('No accounts available')), 'no accounts triggers fallback');
     ok(!m.shouldFallbackToCopilot(new Error('prompt is too long: 900000 tokens > 850000 maximum')), 'prompt too long does NOT fallback');
     ok(!m.shouldFallbackToCopilot(new Error('invalid_request_error: bad tool schema')), 'invalid request does NOT fallback');
-    ok(m.mapToCopilotModel('claude-opus-5-5-high') === 'fusion-standard', 'always fusion-standard (opus)');
-    ok(m.mapToCopilotModel('gemini-3.8-flash-tiered') === 'fusion-standard', 'always fusion-standard (gemini)');
-    const fm = config.copilotFallback.forceModel; config.copilotFallback.forceModel = '';
-    ok(m.mapToCopilotModel('claude-opus-5-5-high') === 'claude-opus-5.5', 'opus mapping (forceModel off)');
-    ok(m.mapToCopilotModel('claude-sonnet-5-5-low') === 'claude-sonnet-5.5', 'sonnet mapping');
-    ok(m.mapToCopilotModel('gemini-3.8-flash-tiered') === 'gemini-3.8-flash', 'gemini mapping (forceModel off)');
-    config.copilotFallback.forceModel = fm;
+    ok(m.mapToCopilotModel('claude-opus-5-5-high') === 'fusion-standard', 'hardcoded fusion-standard (opus)');
+    ok(m.mapToCopilotModel('gemini-3.8-flash-tiered') === 'fusion-standard', 'hardcoded fusion-standard (gemini)');
+    ok(config.copilotFallback.always === false, 'always flag off by default');
+    ok(!m.isAlwaysCopilot(), 'isAlwaysCopilot false by default');
+    config.copilotFallback.always = true;
+    ok(m.isAlwaysCopilot() && m.getCopilotUpstream().config.targetModel === 'fusion-standard', 'always flag -> fusion-standard upstream');
+    config.copilotFallback.always = false;
     ok(!m.canFallbackToCopilot({ messages: [{ role: 'user', content: 'x'.repeat(900000) }] }), 'oversized prompt skipped');
     ok(m.canFallbackToCopilot({ messages: [{ role: 'user', content: 'hi' }] }), 'small prompt allowed');
 
