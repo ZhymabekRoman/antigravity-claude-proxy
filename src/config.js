@@ -70,7 +70,27 @@ const DEFAULT_CONFIG = {
         apiKey: '',
         model: ''     // Optional model override, e.g. "claude-3-5-haiku-20241022" or empty to keep requested model
     },
-    upstreams: {}, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
+    // GitHub Copilot via local copilot-api server (Anthropic-compatible /v1/messages).
+    // Used as automatic last-resort fallback when all Google accounts are unavailable.
+    copilotFallback: {
+        enabled: true,                       // ON by default (env COPILOT_FALLBACK=false to disable)
+        baseUrl: 'http://localhost:4141',
+        apiKey: 'test',
+        defaultModel: 'claude-sonnet-5.5',
+        maxPromptTokens: 180000,             // Skip fallback when prompt is larger than Copilot's window
+        modelMap: {}                         // Optional explicit map: { "requested-model": "copilot-model" }
+    },
+    upstreams: {
+        // Directly selectable Copilot upstream: model "copilot/claude-opus-5.5" -> "claude-opus-5.5"
+        copilot: {
+            type: 'anthropic-pass-through',
+            baseUrl: 'http://localhost:4141',
+            apiKey: 'test',
+            models: ['copilot/*'],
+            stripPrefix: 'copilot/',
+            enabled: true
+        }
+    }, // Dynamic custom upstream providers (e.g. CheaperInference for GLM / Qwen / etc.)
     modelMapping: {},
     // Account selection strategy configuration
     accountSelection: {
@@ -165,6 +185,15 @@ function loadConfig() {
         if (process.env.MODEL_SPLIT_38_WEIGHT !== undefined) {
             config.modelSplit = config.modelSplit || {};
             config.modelSplit.gemini38Weight = Number(process.env.MODEL_SPLIT_38_WEIGHT) || 40;
+        }
+        if (process.env.COPILOT_FALLBACK !== undefined) {
+            config.copilotFallback = config.copilotFallback || {};
+            config.copilotFallback.enabled = process.env.COPILOT_FALLBACK !== 'false';
+        }
+        if (process.env.COPILOT_API_URL) {
+            config.copilotFallback = config.copilotFallback || {};
+            config.copilotFallback.baseUrl = process.env.COPILOT_API_URL;
+            if (config.upstreams?.copilot) config.upstreams.copilot.baseUrl = process.env.COPILOT_API_URL;
         }
         if (process.env.TOKEN_USAGE_SCALE) {
             const scale = parseFloat(process.env.TOKEN_USAGE_SCALE);

@@ -20,6 +20,20 @@ export function cleanModelName(model) {
 }
 
 /**
+ * Resolve the model id sent upstream: explicit targetModel wins, otherwise the cleaned
+ * client model with an optional `stripPrefix` (e.g. "copilot/") removed.
+ */
+function resolveTargetModel(anthropicRequest, upstreamConfig) {
+    if (upstreamConfig.targetModel) return upstreamConfig.targetModel;
+    let name = cleanModelName(anthropicRequest.model);
+    const prefix = upstreamConfig.stripPrefix;
+    if (prefix && typeof name === 'string' && name.toLowerCase().startsWith(prefix.toLowerCase())) {
+        name = name.slice(prefix.length);
+    }
+    return name;
+}
+
+/**
  * Build request payload for Anthropic-compatible upstream
  * @param {Object} anthropicRequest - Client request
  * @param {string} targetModel - Resolved model name
@@ -54,7 +68,7 @@ function buildUpstreamPayload(anthropicRequest, targetModel) {
  * @yields {Object} Anthropic SSE event objects
  */
 export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConfig) {
-    const targetModel = upstreamConfig.targetModel || cleanModelName(anthropicRequest.model);
+    const targetModel = resolveTargetModel(anthropicRequest, upstreamConfig);
     const payload = buildUpstreamPayload(anthropicRequest, targetModel);
     payload.stream = true;
 
@@ -147,7 +161,7 @@ export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConf
  * @returns {Promise<Object>} Anthropic Messages response object
  */
 export async function sendAnthropicPassThrough(anthropicRequest, upstreamConfig) {
-    const targetModel = upstreamConfig.targetModel || cleanModelName(anthropicRequest.model);
+    const targetModel = resolveTargetModel(anthropicRequest, upstreamConfig);
     const payload = buildUpstreamPayload(anthropicRequest, targetModel);
     payload.stream = false;
 

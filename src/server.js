@@ -8,6 +8,12 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+    shouldFallbackToCopilot,
+    canFallbackToCopilot,
+    streamCopilotFallback,
+    sendCopilotFallback
+} from './providers/copilot-fallback.js';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
 import { sessionRouter } from './cloudcode/session-manager.js';
 import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream, isSubagentRequest, getSubagentUpstream } from './providers/router.js';
@@ -1145,12 +1151,23 @@ app.post('/v1/messages', async (req, res) => {
 
             try {
                 // Initialize the generator
-                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
+                let generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
                 
                 // BUFFERING STRATEGY:
                 // Pull the first event *before* sending headers. 
                 // If this throws, we can safely send a 4xx/5xx error JSON.
-                const firstResult = await generator.next();
+                let firstResult;
+                try {
+                    firstResult = await generator.next();
+                } catch (googleError) {
+                    // Google path exhausted before any byte was sent -> GitHub Copilot fallback
+                    if (shouldFallbackToCopilot(googleError) && canFallbackToCopilot(request)) {
+                        generator = streamCopilotFallback(request, googleError);
+                        firstResult = await generator.next();
+                    } else {
+                        throw googleError;
+                    }
+                }
 
                 // If we get here, the stream started successfully.
                 res.status(200);
@@ -1205,7 +1222,16 @@ app.post('/v1/messages', async (req, res) => {
             return;
         } else {
             // Handle non-streaming response
-            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+            let response;
+            try {
+                response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+            } catch (googleError) {
+                if (shouldFallbackToCopilot(googleError) && canFallbackToCopilot(request)) {
+                    response = await sendCopilotFallback(request, googleError);
+                } else {
+                    throw googleError;
+                }
+            }
             res.json(response);
         }
 

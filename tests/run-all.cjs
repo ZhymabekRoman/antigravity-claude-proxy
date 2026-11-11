@@ -26,6 +26,7 @@ const tests = [
     { name: '403 Account Rotation (Unit)', file: 'test-403-account-rotation.cjs' },
     { name: '403 Account Rotation (Integration)', file: 'test-403-integration.cjs' },
     { name: 'Version Detection', file: 'test-version-detection.js' },
+    { name: 'Copilot Fallback', file: 'test-copilot-fallback.cjs' },
     { name: 'Weighted Model Split & TPU Cache', file: 'test-model-splitter.cjs' },
     { name: 'Thought Signatures (E2E)', file: 'test-thought-signatures-e2e.cjs' }
 ];
