@@ -878,7 +878,7 @@ app.post('/v1/messages', async (req, res) => {
         }
 
         // 2. Dynamic Upstream Provider Check (e.g. Strata for strata*/swift*, CheaperInference for GLM / Qwen / etc.)
-        // Flag: always route to GitHub Copilot (copilot-api, gemini-3.8-flash), bypassing Google
+        // Flag: always route to GitHub Copilot (copilot-api, fusion-standard), bypassing Google
         const customUpstream = targetUpstream || (isAlwaysCopilot() ? getCopilotUpstream() : findUpstreamForModel(requestedModel));
         if (customUpstream) {
             if (!messages || !Array.isArray(messages)) {
