@@ -18,7 +18,7 @@ import {
 } from './adapters/anthropic-pass-through.js';
 
 /** Hardcoded: every Copilot request (fallback, direct, always-mode) uses this model. */
-export const COPILOT_MODEL = 'fusion-standard';
+export const COPILOT_MODEL = 'gemini-3.8-flash';
 
 /** Errors that mean "Google side is unavailable" and a fallback makes sense. */
 const FALLBACK_ERROR_PATTERNS = [
@@ -62,7 +62,7 @@ export function shouldFallbackToCopilot(error) {
 }
 
 /**
- * Copilot model for any requested model: hardcoded to fusion-standard for now.
+ * Copilot model for any requested model: hardcoded to gemini-3.8-flash for now.
  * @returns {string}
  */
 export function mapToCopilotModel() {
@@ -117,7 +117,7 @@ export function sanitizeForCopilot(request, targetModel) {
     const messages = (request.messages || []).map(msg => {
         if (!Array.isArray(msg.content)) return msg;
         const content = msg.content
-            .filter(b => b && b.type !== 'thinking' && b.type !== 'redacted_thinking')
+            .filter(b => b && b.type !== 'thinking' && b.type !== 'redacted_thinking' && !(b.type === 'text' && !String(b.text || '').trim()))
             .map(b => {
                 if (b && b.thoughtSignature !== undefined) {
                     const { thoughtSignature, ...rest } = b;

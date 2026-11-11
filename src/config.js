@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
         apiKey: 'test',
         always: false,                       // Route EVERY request to Copilot, bypassing Google (env COPILOT_ALWAYS=true)
         maxPromptTokens: 180000              // Skip fallback when prompt is larger than Copilot's window
-        // Model is hardcoded to fusion-standard (see providers/copilot-fallback.js)
+        // Model is hardcoded to gemini-3.8-flash (see providers/copilot-fallback.js)
     },
     upstreams: {
         // Directly selectable Copilot upstream: model "copilot/claude-opus-5.5" -> "claude-opus-5.5"
@@ -88,7 +88,7 @@ const DEFAULT_CONFIG = {
             apiKey: 'test',
             models: ['copilot/*'],
             stripPrefix: 'copilot/',
-            targetModel: 'fusion-standard',  // Hardcoded fusion-standard
+            targetModel: 'gemini-3.8-flash',  // Hardcoded gemini-3.8-flash
             sanitizeForCopilot: true,
             enabled: true
         }
