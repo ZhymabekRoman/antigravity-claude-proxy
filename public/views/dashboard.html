@@ -342,6 +342,65 @@
                 </div>
             </div>
         </div>
+
+        <!-- Model Fallback & Security Filter Analytics -->
+        <div class="mt-4 pt-4 border-t border-space-border/30">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                    <h4 class="text-[11px] font-mono font-bold text-gray-200 uppercase tracking-wider">Model Fallback & Security Filter Analytics</h4>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap text-[10px] font-mono">
+                    <span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                        Total Fallbacks: <strong x-text="$store.data.telemetry?.fallbackAnalytics?.totalFallbacks || 0"></strong>
+                        (<span x-text="($store.data.telemetry?.fallbackAnalytics?.fallbackRatePct || 0) + '%'"></span> of turns)
+                    </span>
+                    <span class="px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20">
+                        Security Triggered: <strong x-text="$store.data.telemetry?.fallbackAnalytics?.securityFilter?.triggeredCount || 0"></strong>
+                    </span>
+                    <span class="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                        Hydrogen Redirect Disabled (3.8-flash Pinned Reqs): <strong x-text="$store.data.telemetry?.fallbackAnalytics?.securityFilter?.fallbackDisabledCount || 0"></strong>
+                    </span>
+                    <span class="px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                        Pinned Sessions: <strong x-text="$store.data.telemetry?.fallbackAnalytics?.securityFilter?.pinnedSessionsCount || 0"></strong>
+                    </span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                <div class="bg-space-800/40 border border-space-border/30 rounded-lg p-2.5">
+                    <div class="text-[10px] font-mono text-gray-400 uppercase">Security Filter</div>
+                    <div class="text-lg font-bold font-mono text-rose-400 mt-0.5" x-text="$store.data.telemetry?.fallbackAnalytics?.byReason?.security_filter || 0"></div>
+                </div>
+                <div class="bg-space-800/40 border border-space-border/30 rounded-lg p-2.5">
+                    <div class="text-[10px] font-mono text-gray-400 uppercase">Rate Limit (429)</div>
+                    <div class="text-lg font-bold font-mono text-amber-400 mt-0.5" x-text="$store.data.telemetry?.fallbackAnalytics?.byReason?.rate_limit || 0"></div>
+                </div>
+                <div class="bg-space-800/40 border border-space-border/30 rounded-lg p-2.5">
+                    <div class="text-[10px] font-mono text-gray-400 uppercase">Retries Exhausted</div>
+                    <div class="text-lg font-bold font-mono text-yellow-400 mt-0.5" x-text="$store.data.telemetry?.fallbackAnalytics?.byReason?.retries_exhausted || 0"></div>
+                </div>
+                <div class="bg-space-800/40 border border-space-border/30 rounded-lg p-2.5">
+                    <div class="text-[10px] font-mono text-gray-400 uppercase">Copilot Fallback</div>
+                    <div class="text-lg font-bold font-mono text-purple-400 mt-0.5" x-text="$store.data.telemetry?.fallbackAnalytics?.byReason?.copilot_fallback || 0"></div>
+                </div>
+                <div class="bg-space-800/40 border border-space-border/30 rounded-lg p-2.5">
+                    <div class="text-[10px] font-mono text-gray-400 uppercase">Geo Restriction</div>
+                    <div class="text-lg font-bold font-mono text-blue-400 mt-0.5" x-text="$store.data.telemetry?.fallbackAnalytics?.byReason?.geo_restriction || 0"></div>
+                </div>
+            </div>
+
+            <template x-if="Object.keys($store.data.telemetry?.fallbackAnalytics?.byRoute || {}).length > 0">
+                <div class="mt-2.5 flex flex-wrap gap-1.5 text-[10px] font-mono">
+                    <span class="text-gray-400 py-0.5">Routes:</span>
+                    <template x-for="[route, count] in Object.entries($store.data.telemetry?.fallbackAnalytics?.byRoute || {})" :key="route">
+                        <span class="px-2 py-0.5 rounded bg-space-850 border border-space-border/40 text-gray-300">
+                            <span x-text="route"></span>: <strong class="text-cyan-300" x-text="count"></strong>
+                        </span>
+                    </template>
+                </div>
+            </template>
+        </div>
     </div>
 
     <!-- Usage Trend Chart -->
@@ -637,9 +696,19 @@
                 </span>
             </div>
 
-            <!-- Meta stats -->
+            <!-- Meta stats + unpin actions -->
             <div class="flex items-center gap-3 text-[10px] font-mono text-gray-500">
                 <span class="hidden sm:inline">TPU Prompt Cache Affinity</span>
+                <button class="btn btn-xs btn-outline border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10 font-mono text-[10px]"
+                        title="Clear account affinity, filter pin and last-resort marker for sessions currently served by Strata"
+                        @click="if (confirm('Unpin all sessions served by Strata?')) $store.data.unpinSessions({ strata: true }).then(n => n !== null && alert('Unpinned ' + n + ' Strata session(s)'))">
+                    UNPIN STRATA
+                </button>
+                <button class="btn btn-xs btn-outline border-red-500/40 text-red-300 hover:bg-red-500/10 font-mono text-[10px]"
+                        title="Clear account affinity and filter pins for ALL sessions (one-time prompt-cache miss per session)"
+                        @click="if (confirm('Unpin ALL sessions? Each session re-picks an account (one cold prompt cache).')) $store.data.unpinSessions({ all: true }).then(n => n !== null && alert('Unpinned ' + n + ' session(s)'))">
+                    UNPIN ALL
+                </button>
             </div>
         </div>
 
@@ -718,6 +787,11 @@
                             <!-- Model -->
                             <td class="py-3 whitespace-nowrap">
                                 <span class="text-gray-400 text-[11px]" x-text="s.modelId"></span>
+                                <template x-if="s.pinnedModel">
+                                    <span class="badge badge-xs bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[8px] font-mono ml-1 whitespace-nowrap"
+                                          :title="'Filter-pinned to ' + s.pinnedModel + ' (expires in ' + Math.round((s.pinExpiresInMs || 0) / 60000) + ' min)'"
+                                          x-text="'PIN ' + Math.round((s.pinExpiresInMs || 0) / 60000) + 'm'"></span>
+                                </template>
                             </td>
 
                             <!-- Quota Used % -->
@@ -751,7 +825,13 @@
                                         </span>
                                     </div>
                                 </template>
-                                <template x-if="!s.isVertex && s.remainingPercent === null">
+                                <template x-if="!s.isVertex && s.remainingPercent === null && s.accountEmail === 'unassigned'">
+                                    <div class="flex items-center gap-2 font-mono">
+                                        <span class="badge badge-xs bg-gray-500/20 text-gray-300 border border-gray-500/30 text-[9px] font-bold whitespace-nowrap">NO ACCOUNT</span>
+                                        <span class="text-[11px] text-gray-300" x-text="s.servedBy ? ('served by ' + s.servedBy.backend) : 'all backends failing'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="!s.isVertex && s.remainingPercent === null && s.accountEmail !== 'unassigned'">
                                     <div class="flex items-center gap-2 font-mono">
                                         <span class="badge badge-xs bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[9px] font-bold whitespace-nowrap">BYOK DIRECT</span>
                                         <span class="text-[11px] text-gray-300" x-text="s.byokKeyPreview ? s.byokKeyPreview : 'Direct API Key'"></span>
@@ -768,11 +848,11 @@
                             <td class="py-3 text-center whitespace-nowrap">
                                 <div class="inline-flex items-center gap-1.5">
                                     <div class="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                         :class="s.accountStatus === 'ok' ? 'bg-neon-green' : (s.accountStatus === 'rate_limited' ? 'bg-yellow-400 animate-pulse' : 'bg-red-500')">
+                                         :class="s.accountStatus === 'ok' ? 'bg-neon-green' : ((s.accountStatus === 'rate_limited' || s.accountStatus === 'fallback') ? 'bg-yellow-400 animate-pulse' : 'bg-red-500')">
                                     </div>
                                     <span class="text-[10px] uppercase font-bold"
-                                          :class="s.accountStatus === 'ok' ? 'text-neon-green' : (s.accountStatus === 'rate_limited' ? 'text-yellow-400' : 'text-red-400')"
-                                          x-text="s.accountStatus === 'ok' ? 'PINNED' : (s.accountStatus === 'rate_limited' ? 'COOLDOWN' : 'ERROR')">
+                                          :class="s.accountStatus === 'ok' ? 'text-neon-green' : ((s.accountStatus === 'rate_limited' || s.accountStatus === 'fallback') ? 'text-yellow-400' : 'text-red-400')"
+                                          x-text="s.accountStatus === 'ok' ? 'PINNED' : (s.accountStatus === 'rate_limited' ? 'COOLDOWN' : (s.accountStatus === 'fallback' ? 'FALLBACK' : 'ERROR'))">
                                     </span>
                                 </div>
                             </td>
@@ -780,6 +860,8 @@
                             <!-- Idle -->
                             <td class="py-3 pr-6 text-right text-gray-500 text-[11px] whitespace-nowrap">
                                 <span x-text="s.idleSeconds < 60 ? s.idleSeconds + 's ago' : Math.round(s.idleSeconds / 60) + 'm ago'"></span>
+                                <button class="ml-2 text-[9px] text-gray-500 hover:text-yellow-300 underline" title="Unpin this session"
+                                        @click="$store.data.unpinSessions({ sessionKey: s.sessionKey })">unpin</button>
                             </td>
                         </tr>
                     </template>

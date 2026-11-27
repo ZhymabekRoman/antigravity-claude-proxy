@@ -22,6 +22,7 @@ import { logger } from '../utils/logger.js';
 import { getAuthorizationUrl, completeOAuthFlow, startCallbackServer } from '../auth/oauth.js';
 import { loadAccounts, saveAccounts } from '../account-manager/storage.js';
 import { getPackageVersion } from '../utils/helpers.js';
+import { sessionRouter } from '../cloudcode/session-manager.js';
 import { generateUsageReport, formatUsageReportTable, resetByokSpend } from '../modules/byok-accounting.js';
 
 // Get package version
@@ -198,6 +199,27 @@ function validateConfigFields(input) {
     }
     if (typeof input.vertexFlexMode === 'boolean') {
         updates.vertexFlexMode = input.vertexFlexMode;
+    }
+    // Hot toggle (no restart): compactRouting = { enabled: boolean, model?: "gemini-<model>" }
+    if (input.compactRouting && typeof input.compactRouting === 'object') {
+        const cr = {};
+        if (typeof input.compactRouting.enabled === 'boolean') cr.enabled = input.compactRouting.enabled;
+        if (typeof input.compactRouting.model === 'string' && /^gemini-[a-z0-9.\-]+$/i.test(input.compactRouting.model)) cr.model = input.compactRouting.model;
+        if (Object.keys(cr).length) updates.compactRouting = cr;
+    }
+    // Hot toggle (no restart): copilotFallback = { enabled: boolean, always?: boolean }
+    if (input.copilotFallback && typeof input.copilotFallback === 'object') {
+        const cf = {};
+        if (typeof input.copilotFallback.enabled === 'boolean') cf.enabled = input.copilotFallback.enabled;
+        if (typeof input.copilotFallback.always === 'boolean') cf.always = input.copilotFallback.always;
+        if (Object.keys(cf).length) updates.copilotFallback = cf;
+    }
+    // Hot toggle (no restart): strataViaGemini = false | true | "gemini-<model>"
+    if (input.strataViaGemini !== undefined) {
+        const v = input.strataViaGemini;
+        if (typeof v === 'boolean' || (typeof v === 'string' && /^gemini-[a-z0-9.\-]+$/i.test(v))) {
+            updates.upstreams = { strata: { viaGemini: v } };
+        }
     }
     if (input.modelSplit && typeof input.modelSplit === 'object') {
         updates.modelSplit = {};
@@ -389,6 +411,23 @@ export function mountWebUI(app, dirname, accountManager) {
                 status: 'ok',
                 message: `All accounts ${enabled ? 'enabled' : 'disabled'}`
             });
+        } catch (error) {
+            res.status(500).json({ status: 'error', error: error.message });
+        }
+    });
+
+    /**
+     * POST /api/sessions/unpin - Unpin sessions (filter pin + account affinity + last-resort marker)
+     * body: { sessionKey } | { all: true } | { strata: true }
+     */
+    app.post('/api/sessions/unpin', (req, res) => {
+        try {
+            const { sessionKey, all, strata } = req.body || {};
+            if (!sessionKey && !all && !strata) {
+                return res.status(400).json({ status: 'error', error: 'sessionKey, all or strata is required' });
+            }
+            const count = sessionRouter.unpinSessions({ sessionKey: sessionKey || null, all: !!all, strata: !!strata });
+            res.json({ status: 'ok', unpinned: count });
         } catch (error) {
             res.status(500).json({ status: 'error', error: error.message });
         }

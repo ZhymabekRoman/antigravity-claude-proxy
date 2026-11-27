@@ -37,6 +37,16 @@ class TelemetryCollector {
     #failedToolCalls = 0;
     #formatErrors = 0;
 
+    // Model fallback & security-filter analytics
+    #fallbackTotal = 0;
+    #fallbackByReason = {}; // { security_filter, rate_limit, geo_restriction, retries_exhausted, copilot_fallback }
+    #fallbackByRoute = {};  // { "from -> to": count }
+    #securityFilterTriggered = 0;
+    #fallbackDisabledBySecurity = 0; // Requests where Hydrogen redirect/fallback was disabled (pinned to 3.8-flash)
+    #securityFilterByReason = {};    // { SOFT_REFUSAL, SAFETY, PROHIBITED_CONTENT, EMPTY_FILTER, ... }
+    #securityPinnedSessions = new Set();
+    #recentFallbackEvents = [];      // Last 25 events
+
     #saveTimer = null;
     #isDirty = false;
 
@@ -64,6 +74,18 @@ class TelemetryCollector {
                 this.#totalToolCalls = Number(data.totalToolCalls) || 0;
                 this.#failedToolCalls = Number(data.failedToolCalls) || 0;
                 this.#formatErrors = Number(data.formatErrors) || 0;
+
+                if (data.fallbackAnalytics && typeof data.fallbackAnalytics === 'object') {
+                    const fa = data.fallbackAnalytics;
+                    this.#fallbackTotal = Number(fa.totalFallbacks) || 0;
+                    this.#fallbackByReason = (fa.byReason && typeof fa.byReason === 'object') ? { ...fa.byReason } : {};
+                    this.#fallbackByRoute = (fa.byRoute && typeof fa.byRoute === 'object') ? { ...fa.byRoute } : {};
+                    this.#securityFilterTriggered = Number(fa.securityFilterTriggered) || 0;
+                    this.#fallbackDisabledBySecurity = Number(fa.fallbackDisabledBySecurity) || 0;
+                    this.#securityFilterByReason = (fa.securityFilterByReason && typeof fa.securityFilterByReason === 'object') ? { ...fa.securityFilterByReason } : {};
+                    this.#securityPinnedSessions = new Set(Array.isArray(fa.securityPinnedSessions) ? fa.securityPinnedSessions.slice(-500) : []);
+                    this.#recentFallbackEvents = Array.isArray(fa.recentEvents) ? fa.recentEvents.slice(-25) : [];
+                }
 
                 logger.info(`[Telemetry] Restored telemetry data (${this.#totalTurns} lifetime turns)`);
             }
@@ -103,6 +125,16 @@ class TelemetryCollector {
                 totalToolCalls: this.#totalToolCalls,
                 failedToolCalls: this.#failedToolCalls,
                 formatErrors: this.#formatErrors,
+                fallbackAnalytics: {
+                    totalFallbacks: this.#fallbackTotal,
+                    byReason: this.#fallbackByReason,
+                    byRoute: this.#fallbackByRoute,
+                    securityFilterTriggered: this.#securityFilterTriggered,
+                    fallbackDisabledBySecurity: this.#fallbackDisabledBySecurity,
+                    securityFilterByReason: this.#securityFilterByReason,
+                    securityPinnedSessions: Array.from(this.#securityPinnedSessions).slice(-500),
+                    recentEvents: this.#recentFallbackEvents
+                },
                 updatedAt: Date.now()
             };
 
@@ -168,6 +200,59 @@ class TelemetryCollector {
         if (toolErrors > 0) this.#failedToolCalls += toolErrors;
         if (formatErrors > 0) this.#formatErrors += formatErrors;
 
+        this.#scheduleSave();
+    }
+
+    /**
+     * Record a model fallback event (security filter, rate limit, geo restriction, retries exhausted, or Copilot)
+     */
+    recordFallback({ type = 'other', reason = 'UNKNOWN', fromModel = 'unknown', toModel = 'unknown', sessionKey = null } = {}) {
+        this.#fallbackTotal++;
+        this.#fallbackByReason[type] = (this.#fallbackByReason[type] || 0) + 1;
+
+        const routeKey = `${fromModel} -> ${toModel}`;
+        this.#fallbackByRoute[routeKey] = (this.#fallbackByRoute[routeKey] || 0) + 1;
+
+        if (type === 'security_filter') {
+            this.#securityFilterTriggered++;
+            const rKey = String(reason || 'CONTENT_FILTER');
+            this.#securityFilterByReason[rKey] = (this.#securityFilterByReason[rKey] || 0) + 1;
+            if (sessionKey && sessionKey !== 'anon') {
+                if (this.#securityPinnedSessions.size >= 500) {
+                    const oldest = this.#securityPinnedSessions.values().next().value;
+                    this.#securityPinnedSessions.delete(oldest);
+                }
+                this.#securityPinnedSessions.add(sessionKey);
+            }
+        }
+
+        this.#recentFallbackEvents.push({
+            timestamp: Date.now(),
+            type,
+            reason: String(reason || 'UNKNOWN'),
+            fromModel,
+            toModel,
+            sessionKey: sessionKey && sessionKey !== 'anon' ? sessionKey : null
+        });
+        if (this.#recentFallbackEvents.length > 25) {
+            this.#recentFallbackEvents.shift();
+        }
+
+        this.#scheduleSave();
+    }
+
+    /**
+     * Record a request where Hydrogen redirect/fallback was disabled because a security filter pinned the session to 3.8-flash
+     */
+    recordFilterBypass({ sessionKey = null } = {}) {
+        this.#fallbackDisabledBySecurity++;
+        if (sessionKey && sessionKey !== 'anon') {
+            if (this.#securityPinnedSessions.size >= 500) {
+                const oldest = this.#securityPinnedSessions.values().next().value;
+                this.#securityPinnedSessions.delete(oldest);
+            }
+            this.#securityPinnedSessions.add(sessionKey);
+        }
         this.#scheduleSave();
     }
 
@@ -313,6 +398,28 @@ class TelemetryCollector {
                 cachedTokens: this.#totalCachedTokens,
                 totalPromptTokens: totalPromptTokens,
                 savedTokensFormatted: formatTokenCount(this.#totalCachedTokens)
+            },
+            fallbackAnalytics: {
+                totalFallbacks: this.#fallbackTotal,
+                fallbackRatePct: this.#totalTurns > 0
+                    ? Number(((this.#fallbackTotal / this.#totalTurns) * 100).toFixed(2))
+                    : 0,
+                byReason: {
+                    security_filter: this.#fallbackByReason.security_filter || 0,
+                    rate_limit: this.#fallbackByReason.rate_limit || 0,
+                    geo_restriction: this.#fallbackByReason.geo_restriction || 0,
+                    retries_exhausted: this.#fallbackByReason.retries_exhausted || 0,
+                    copilot_fallback: this.#fallbackByReason.copilot_fallback || 0,
+                    ...this.#fallbackByReason
+                },
+                byRoute: { ...this.#fallbackByRoute },
+                securityFilter: {
+                    triggeredCount: this.#securityFilterTriggered,
+                    fallbackDisabledCount: this.#fallbackDisabledBySecurity,
+                    pinnedSessionsCount: this.#securityPinnedSessions.size,
+                    byReason: { ...this.#securityFilterByReason }
+                },
+                recentEvents: [...this.#recentFallbackEvents].reverse()
             },
             totalTurns: this.#totalTurns,
             updatedAt: Date.now()

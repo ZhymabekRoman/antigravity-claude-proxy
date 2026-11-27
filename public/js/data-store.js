@@ -200,6 +200,26 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async unpinSessions(opts) {
+            try {
+                const password = Alpine.store('global').webuiPassword;
+                const { response, newPassword } = await window.utils.request('/api/sessions/unpin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(opts)
+                }, password);
+                if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+                const data = await response.json();
+                if (!response.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${response.status}`);
+                await this.fetchData();
+                return data.unpinned;
+            } catch (e) {
+                console.error('Unpin failed:', e);
+                alert('Unpin failed: ' + e.message);
+                return null;
+            }
+        },
+
         async performHealthCheck() {
             try {
                 // Get password from global store
