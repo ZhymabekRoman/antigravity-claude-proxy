@@ -19,6 +19,12 @@ import { BaseStrategy } from './base-strategy.js';
 import { HealthTracker, TokenBucketTracker, QuotaTracker } from './trackers/index.js';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config.js';
+import { sessionRouter } from '../../cloudcode/session-manager.js';
+
+// Score penalty per recently-active session already bound to an account. Larger than a typical
+// quota-score gap (e.g. 75% vs 56% quota = ~57 points) so new sessions spread across accounts,
+// while a session that is already pinned keeps its account (cache affinity is untouched).
+const SESSION_LOAD_PENALTY = 150;
 
 // Default weights for scoring
 const DEFAULT_WEIGHTS = {
@@ -79,7 +85,7 @@ export class HybridStrategy extends BaseStrategy {
         const scored = candidates.map(({ account, index }) => ({
             account,
             index,
-            score: this.#calculateScore(account, modelId)
+            score: this.#calculateScore(account, modelId, options.sessionKey)
         }));
 
         scored.sort((a, b) => b.score - a.score);
@@ -237,7 +243,7 @@ export class HybridStrategy extends BaseStrategy {
      * Calculate the combined score for an account
      * @private
      */
-    #calculateScore(account, modelId) {
+    #calculateScore(account, modelId, sessionKey = null) {
         const email = account.email;
 
         // Health component (0-100 scaled by weight)
@@ -263,6 +269,10 @@ export class HybridStrategy extends BaseStrategy {
 
         let score = healthComponent + tokenComponent + quotaComponent + lruComponent;
 
+        // Load spreading: penalize accounts that already serve other active sessions
+        const activeSessions = sessionRouter.getActiveSessionCount(email, { excludeKey: sessionKey });
+        score -= activeSessions * SESSION_LOAD_PENALTY;
+
         // Model Tier Affinity:
         // Free tier BYOK accounts have generous Flash limits (15 RPM, 1500 RPD)
         // but strict Pro limits (2 RPM, 50 RPD).
@@ -273,7 +283,7 @@ export class HybridStrategy extends BaseStrategy {
             const isPro = modelId.includes('pro') || modelId.includes('opus');
             if (isPro) {
                 score -= 80;
-            } else if (modelId.includes('flash') || modelId.includes('sonnet')) {
+            } else if (modelId.includes('flash') || modelId.includes('hydrogen') || modelId.includes('sonnet')) {
                 score += 60;
             }
         }

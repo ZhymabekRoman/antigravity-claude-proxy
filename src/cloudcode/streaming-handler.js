@@ -5,6 +5,7 @@
  * retry logic, and endpoint failover.
  */
 
+import { isTransientProcessingError } from '../errors.js';
 import { config } from '../config.js';
 import {
     ANTIGRAVITY_ENDPOINT_FALLBACKS,
@@ -19,14 +20,17 @@ import {
     MAX_CAPACITY_RETRIES,
     BACKOFF_BY_ERROR_TYPE
 } from '../constants.js';
-import { isRateLimitError, isAuthError, isEmptyResponseError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
+import { isRateLimitError, isAuthError, isEmptyResponseError, isContentFilterError, ContentFilterError, isDuplicateToolCallError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
+import { getFilterFallback38Model } from './model-splitter.js';
 import { formatDuration, sleep, isNetworkError, throttledFetch, getSemaphoreStats, recordRateLimitHit } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
-import { streamSSEResponse, parseGoogleContinuationStream } from './sse-streamer.js';
+import { streamSSEResponse, parseGoogleContinuationStream, extractRecentToolCallState } from './sse-streamer.js';
 import { isSideQuestionRequest } from '../format/request-converter.js';
-import { getFallbackModel } from '../fallback-config.js';
+import { getFallbackModel, getQuotaFallbackModel } from '../fallback-config.js';
+import { hasAnyLastResort } from '../providers/copilot-fallback.js';
+import { getClientSignal, isClientAborted } from '../utils/client-signal.js';
 import {
     getRateLimitBackoff,
     clearRateLimitState,
@@ -39,6 +43,8 @@ import {
 } from './rate-limit-state.js';
 import { sessionRouter, extractSessionKey } from './session-manager.js';
 import { telemetry } from '../modules/telemetry.js';
+import { isFallbackNoticeEnabled, withFallbackNotice } from './fallback-notice.js';
+import { checkBreaker, markProbeRequest, isProbeRequest, markExhausted, markHealthy, isExhaustionError, CircuitOpenError, noteAttempt, getTriedAccounts, PROBE_ATTEMPTS, isBreakerOpen } from './exhaustion-breaker.js';
 import crypto from 'crypto';
 
 import { streamGeminiByok } from './gemini-byok-streamer.js';
@@ -59,6 +65,34 @@ import { sanitizeThoughtSignatures } from '../format/index.js';
  * @throws {Error} If max retries exceeded or no accounts available
  */
 export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
+    const brkModel = anthropicRequest.model;
+    const brk = checkBreaker(brkModel);
+    if (brk.state === 'open' && hasAnyLastResort()) {
+        // Fail fast: known-exhausted model. Prefer the configured fallback model if it is healthy.
+        const fb = fallbackEnabled ? getQuotaFallbackModel(brkModel, isBreakerOpen) : null;
+        if (fb && fb !== brkModel && !isBreakerOpen(fb)) {
+            logger.info(`[Breaker] 🔀 ${brkModel} circuit open -> trying ${fb}`);
+            yield* sendMessageStream({ ...anthropicRequest, model: fb }, accountManager, false);
+            return;
+        }
+        throw new CircuitOpenError(brkModel, brk.retryInMs);
+    }
+    if (brk.state === 'probe') markProbeRequest(anthropicRequest);
+    try {
+        yield* sendMessageStreamInner(anthropicRequest, accountManager, fallbackEnabled);
+    } catch (err) {
+        if (isExhaustionError(err) && !(err instanceof CircuitOpenError)) {
+            const tried = getTriedAccounts(anthropicRequest);
+            let untriedAvailable = 0;
+            try { untriedAvailable = accountManager.getAvailableAccounts(brkModel).filter(a => !tried.has(a.email)).length; } catch { /* keep 0 */ }
+            markExhausted(brkModel, { triedCount: tried.size, untriedAvailable });
+            sessionRouter.noteSessionExhaustion(extractSessionKey(anthropicRequest), brkModel, tried.size);
+        }
+        throw err;
+    }
+}
+
+async function* sendMessageStreamInner(anthropicRequest, accountManager, fallbackEnabled = false) {
     const tReqStart = Date.now();
     const model = anthropicRequest.model;
     let totalRateLimitWaitMs = 0;
@@ -78,9 +112,13 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
-    const maxAttempts = MAX_RETRIES;
+    const maxAttempts = isProbeRequest(anthropicRequest) ? PROBE_ATTEMPTS : MAX_RETRIES;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (isClientAborted(anthropicRequest)) {
+            logger.info('[CloudCode] 🚪 Client disconnected -> aborting upstream work');
+            return;
+        }
         // Clear any expired rate limits before picking
         accountManager.clearExpiredLimits();
 
@@ -104,9 +142,16 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
             if (accountManager.isAllRateLimited(model)) {
                 if (fallbackEnabled) {
-                    const fallbackModel = getFallbackModel(model);
+                    const fallbackModel = getQuotaFallbackModel(model, isBreakerOpen);
                     if (fallbackModel && fallbackModel !== model) {
                         logger.info(`[CloudCode] 🔀 All accounts rate-limited for ${model}, dynamically falling back to ${fallbackModel}`);
+                        telemetry.recordFallback({
+                            type: 'rate_limit',
+                            reason: 'ALL_ACCOUNTS_RATE_LIMITED',
+                            fromModel: model,
+                            toModel: fallbackModel,
+                            sessionKey: extractSessionKey(anthropicRequest)
+                        });
                         const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
                         yield* sendMessageStream(fallbackRequest, accountManager, false);
                         return;
@@ -173,6 +218,8 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
         logger.info(`[CloudCode] 🎯 Attempt ${attempt + 1}/${maxAttempts} for ${model} -> selected account: ${account.email} (pinned: ${account === pinnedAccount})`);
 
+        noteAttempt(anthropicRequest, account.email);
+
         try {
             // ── Gemini-BYOK direct execution ──────────────────────────
             if (account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken)) {
@@ -180,6 +227,8 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 yield* streamGeminiByok(anthropicRequest, account, accountManager);
                 clearRateLimitState(account.email, model);
                 accountManager.notifySuccess(account, model);
+                markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                 return;
             }
 
@@ -206,6 +255,8 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                 yield* streamVertex(anthropicRequest, token, gcpProject, account, accountManager);
                 clearRateLimitState(account.email, model);
                 accountManager.notifySuccess(account, model);
+                markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                 return;
             }
 
@@ -225,6 +276,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             let endpointIndex = 0;
 
             while (endpointIndex < ANTIGRAVITY_ENDPOINT_FALLBACKS.length) {
+                if (isClientAborted(anthropicRequest)) return;
                 const endpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex];
                 try {
                     const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
@@ -232,14 +284,23 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     const reqId = `${new Date().toISOString().replace(/[:.]/g, '-')}_${endpoint.includes('daily') ? 'daily' : 'prod'}_${account.email.split('@')[0]}`;
                     
                     // Dump request to /tmp if enabled
-                    const shouldDump = config?.dumpPayloads === true;
                     const dumpDir = '/tmp/proxy-debug';
+                    // Targeted dump (no restart needed to toggle): create /tmp/proxy-debug/ENABLE containing a session key
+                    // (e.g. conv:335bbc06f87b) or '*'. Only the FIRST attempt of each request is dumped.
+                    let shouldDump = config?.dumpPayloads === true;
+                    if (!shouldDump && attempt === 0 && endpointIndex === 0) {
+                        try {
+                            const { readFileSync } = await import('fs');
+                            const want = readFileSync(`${dumpDir}/ENABLE`, 'utf8').trim();
+                            shouldDump = want === '*' || want === extractSessionKey(anthropicRequest);
+                        } catch { /* flag file absent */ }
+                    }
                     if (shouldDump) {
                         try {
                             const { mkdirSync, writeFileSync } = await import('fs');
-                            mkdirSync(dumpDir, { recursive: true });
-                            writeFileSync(`${dumpDir}/${reqId}_REQ.json`, bodyStr);
-                            writeFileSync(`${dumpDir}/${reqId}_HEADERS.json`, JSON.stringify(buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email), null, 2));
+                            mkdirSync(dumpDir, { recursive: true, mode: 0o700 });   // HEADERS contain a bearer token
+                            writeFileSync(`${dumpDir}/${reqId}_REQ.json`, bodyStr, { mode: 0o600 });
+                            writeFileSync(`${dumpDir}/${reqId}_HEADERS.json`, JSON.stringify(buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email), null, 2), { mode: 0o600 });
                         } catch (e) { logger.warn(`[DEBUG] Failed to dump request: ${e.message}`); }
                     }
                     
@@ -248,6 +309,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     // ── PROFILING: HTTP TTFB ────────────────────────────────────
                     const tFetch = Date.now();
                     const response = await throttledFetch(url, {
+                        signal: getClientSignal(anthropicRequest),
                         method: 'POST',
                         headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                         body: JSON.stringify(payload)
@@ -375,11 +437,12 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                 logger.info(`[CloudCode] Rate limit on ${endpoint} for ${account.email}, falling back to next endpoint (${ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex + 1]})...`);
                                 endpointIndex++;
                                 continue;
-                            } else if (smartBackoffMs > DEFAULT_COOLDOWN_MS) {
-                                // Long-term quota exhaustion across all endpoints - switch account fast
-                                logger.info(`[CloudCode] Quota exhausted across all endpoints for ${account.email} (${formatDuration(smartBackoffMs)}), switching account...`);
-                                if (SWITCH_ACCOUNT_DELAY_MS > 0) await sleep(SWITCH_ACCOUNT_DELAY_MS);
-                                accountManager.markRateLimited(account.email, smartBackoffMs, model);
+                            } else if (smartBackoffMs > DEFAULT_COOLDOWN_MS || backoff.delayMs > DEFAULT_COOLDOWN_MS || backoff.attempt >= 2) {
+                                // Quota exhaustion or repeated 429 across all endpoints - switch account fast instead of looping forever
+                                const cooldownMs = Math.max(smartBackoffMs, backoff.delayMs);
+                                logger.info(`[CloudCode] Quota exhausted across all endpoints for ${account.email} (${formatDuration(cooldownMs)}, attempt ${backoff.attempt}), switching account...`);
+                                if (SWITCH_ACCOUNT_DELAY_MS > 0 && accountManager.getAvailableAccounts(model).filter(a => a.email !== account.email && !getTriedAccounts(anthropicRequest).has(a.email)).length === 0) await sleep(SWITCH_ACCOUNT_DELAY_MS); // fresh accounts left -> switch immediately
+                                accountManager.markRateLimited(account.email, cooldownMs, model);
                                 throw new Error(`QUOTA_EXHAUSTED: ${errorText}`);
                             } else {
                                 // Short-term rate limit - use exponential backoff delay
@@ -419,16 +482,38 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         // accounts/backends across turns with mismatched signatures. Sanitize and retry immediately.
                         if (response.status === 400) {
                             if (errorText.includes('User location is not supported')) {
-                                const fallbackModel = getFallbackModel(model);
+                                const fallbackModel = getQuotaFallbackModel(model, isBreakerOpen);
                                 logger.warn(`[CloudCode] ⚠️ Geo-restriction for ${model} from current IP. Transparent fallback to ${fallbackModel}...`);
+                                telemetry.recordFallback({
+                                    type: 'geo_restriction',
+                                    reason: 'GEO_UNSUPPORTED',
+                                    fromModel: model,
+                                    toModel: fallbackModel,
+                                    sessionKey
+                                });
                                 const geoFallbackRequest = { ...anthropicRequest, model: fallbackModel };
                                 yield* sendMessageStream(geoFallbackRequest, accountManager, true);
                                 return;
+                            }
+                            if (
+                                /PROHIBITED_CONTENT|SAFETY|BLOCKLIST|RECITATION|SPII|IMAGE_SAFETY|content.*filter|blocked.*safety/i.test(errorText) &&
+                                !model.includes('3.8-flash')
+                            ) {
+                                throw new ContentFilterError(`HTTP 400 content filter: ${errorText.substring(0, 120)}`, 'PROHIBITED_CONTENT');
                             }
                             if (errorText.toLowerCase().includes('thought signature')) {
                                 logger.warn(`[CloudCode] ⚠️ "Corrupted/Invalid thought signature" received for ${account.email}. Retrying with sanitized skip signatures...`);
                                 sanitizeThoughtSignatures(payload);
                                 // Retry immediately against the current endpoint with sanitized payload
+                                continue;
+                            }
+                            if (isTransientProcessingError(errorText)) {
+                                // Google's "could not be processed by the model" 400 is account/slot specific: the same request succeeds on another
+                                // account. Hammering the same account does not help, so unbind the session and rotate (next endpoint -> next account).
+                                logger.warn(`[CloudCode] Transient 400 "could not be processed by the model" on ${account.email} - rotating account`);
+                                if (sessionKey) sessionRouter.unbindSession(sessionKey);
+                                lastError = new Error(`Transient 400 on ${account.email}: ${errorText.substring(0, 120)}`);
+                                endpointIndex = ANTIGRAVITY_ENDPOINT_FALLBACKS.length;   // skip remaining endpoints, go to the next account
                                 continue;
                             }
                             logger.error(`[CloudCode] Invalid request (400): ${errorText.substring(0, 200)}`);
@@ -512,6 +597,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             let activeAccount = account;
                             let activeToken = token;
                             let contRes = await throttledFetch(url, {
+                                signal: getClientSignal(anthropicRequest),
                                 method: 'POST',
                                 headers: buildHeaders(activeToken, model, 'text/event-stream', payload.request.sessionId, activeAccount.email),
                                 body: JSON.stringify(contPayload)
@@ -541,6 +627,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                                         logger.info(`[CloudCode] 🔄 Continuation retry attempt ${contAttempt} with account: ${activeAccount.email}`);
                                         contRes = await throttledFetch(url, {
+                                            signal: getClientSignal(anthropicRequest),
                                             method: 'POST',
                                             headers: buildHeaders(activeToken, model, 'text/event-stream', payload.request.sessionId, activeAccount.email),
                                             body: JSON.stringify(rotatedPayload)
@@ -572,6 +659,11 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         }
                     };
 
+                    const recentToolState = extractRecentToolCallState(anthropicRequest?.messages);
+                    let duplicateToolRetries = 0;
+                    const MAX_DUPLICATE_TOOL_RETRIES = 2;
+                    let activePayload = payload;
+
                     for (let emptyRetries = 0; emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES; emptyRetries++) {
                         try {
                             // ── PROFILING: stream duration ──────────────────────
@@ -580,7 +672,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             let outputTokens = 0;
                             let inputTokens = 0;
                             let cachedTokens = 0;
-                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model, onThoughtOnly, isSideQuestion)) {
+                            for await (const event of streamSSEResponse(currentResponse, anthropicRequest.model, onThoughtOnly, isSideQuestion, { recentToolState })) {
                                 if (!tFirstToken && (event?.type === 'content_block_delta' || event?.type === 'content_block_start' || event?.type === 'message_delta')) {
                                     tFirstToken = Date.now();
                                 }
@@ -628,11 +720,90 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                             // Clear rate limit state on success
                             clearRateLimitState(account.email, model);
                             accountManager.notifySuccess(account, model);
+                            markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                             return;
                         } catch (streamError) {
+                            // If content/safety filter triggered (or empty response on Hydrogen),
+                            // immediately fall back and pin session to Gemini 3.8 Flash!
+                            if (isContentFilterError(streamError)) {
+                                throw streamError;
+                            }
+
+                            // Intercepted duplicate tool_use (e.g. Read loop on unchanged file) before
+                            // any SSE event was flushed to client: retry with temp + thinking boost + reminder.
+                            if (isDuplicateToolCallError(streamError)) {
+                                if (duplicateToolRetries >= MAX_DUPLICATE_TOOL_RETRIES) {
+                                    logger.warn(`[CloudCode] 🔁 Duplicate tool_use (${streamError.toolName}) persisted after ${MAX_DUPLICATE_TOOL_RETRIES} retries; letting client handle`);
+                                    // Refetch once without duplicate check by clearing signatures on next pass, or rethrow
+                                    recentToolState.signatures.clear();
+                                    currentResponse = await throttledFetch(url, {
+                                        signal: getClientSignal(anthropicRequest),
+                                        method: 'POST',
+                                        headers: buildHeaders(token, model, 'text/event-stream', activePayload.request.sessionId, account.email),
+                                        body: JSON.stringify(activePayload)
+                                    });
+                                    continue;
+                                }
+                                duplicateToolRetries++;
+                                logger.warn(`[CloudCode] 🔁 Duplicate ${streamError.toolName} intercepted (retry ${duplicateToolRetries}/${MAX_DUPLICATE_TOOL_RETRIES}); boosting temperature=0.5, thinkingBudget>=8192 & appending anti-loop reminder`);
+
+                                // Clone payload so we only mutate retry request
+                                activePayload = JSON.parse(JSON.stringify(activePayload));
+                                const reqObj = activePayload.request;
+                                reqObj.generationConfig = reqObj.generationConfig || {};
+                                reqObj.generationConfig.temperature = 0.5;
+
+                                // Ensure thinking is enabled with at least 8192 budget (for Gemini models)
+                                if (!isClaude) {
+                                    const existingBudget = reqObj.generationConfig.thinkingConfig?.thinkingBudget || 0;
+                                    const boostedBudget = Math.max(existingBudget, 8192);
+                                    reqObj.generationConfig.thinkingConfig = {
+                                        ...(reqObj.generationConfig.thinkingConfig || {}),
+                                        includeThoughts: true,
+                                        thinkingBudget: boostedBudget
+                                    };
+                                    if (!reqObj.generationConfig.maxOutputTokens || reqObj.generationConfig.maxOutputTokens <= boostedBudget) {
+                                        reqObj.generationConfig.maxOutputTokens = boostedBudget + 8192;
+                                    }
+                                }
+
+                                // Append <system-reminder> to the LAST user message (preserves TPU prefix cache)
+                                const contents = reqObj.contents;
+                                if (Array.isArray(contents) && contents.length > 0) {
+                                    for (let idx = contents.length - 1; idx >= 0; idx--) {
+                                        if (contents[idx]?.role === 'user' && Array.isArray(contents[idx].parts)) {
+                                            contents[idx].parts.push({
+                                                text: `\n<system-reminder>STOP repeating ${streamError.toolName} (${streamError.signature}). That exact file/range is ALREADY in your context above and unchanged. Do NOT call ${streamError.toolName} on it again. Use the content you already read to Edit, run Bash, or produce your final response now.</system-reminder>`
+                                            });
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                currentResponse = await throttledFetch(url, {
+                                    signal: getClientSignal(anthropicRequest),
+                                    method: 'POST',
+                                    headers: buildHeaders(token, model, 'text/event-stream', activePayload.request.sessionId, account.email),
+                                    body: JSON.stringify(activePayload)
+                                });
+                                if (!currentResponse.ok) {
+                                    const errTxt = await currentResponse.text();
+                                    throw new Error(`Duplicate-tool retry HTTP ${currentResponse.status}: ${errTxt}`);
+                                }
+                                emptyRetries--; // Don't consume emptyRetries budget on duplicate-tool retry
+                                continue;
+                            }
+
                             // Only retry on EmptyResponseError
                             if (!isEmptyResponseError(streamError)) {
                                 throw streamError;
+                            }
+
+                            // If Hydrogen returned an empty response (often silent safety filter),
+                            // after 1 retry switch and stick to Gemini 3.8 Flash instead of failing!
+                            if (model.includes('hydrogen') && emptyRetries >= 1) {
+                                throw new ContentFilterError('Empty response on Hydrogen (likely silent filter)', 'EMPTY_FILTER');
                             }
 
                             // Check if we have retries left
@@ -649,6 +820,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                             // Refetch the response
                             currentResponse = await throttledFetch(url, {
+                                signal: getClientSignal(anthropicRequest),
                                 method: 'POST',
                                 headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                                 body: JSON.stringify(payload)
@@ -682,6 +854,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     logger.warn(`[CloudCode] Retry got ${currentResponse.status}, will retry...`);
                                     await sleep(1000);
                                     currentResponse = await throttledFetch(url, {
+                                        signal: getClientSignal(anthropicRequest),
                                         method: 'POST',
                                         headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                                         body: JSON.stringify(payload)
@@ -697,6 +870,9 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                     }
 
                 } catch (endpointError) {
+                    if (isContentFilterError(endpointError)) {
+                        throw endpointError; // Bubble up to switch & pin to gemini-3.8-flash
+                    }
                     if (isRateLimitError(endpointError)) {
                         throw endpointError; // Re-throw to trigger account switch
                     }
@@ -731,6 +907,32 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
             }
 
         } catch (error) {
+            if (isClientAborted(anthropicRequest)) return; // client gone: do not retry other accounts
+            if (isContentFilterError(error) && !model.includes('3.8-flash')) {
+                const fallback38 = getFilterFallback38Model(model);
+                logger.warn(`[CloudCode] 🛡️ Filter triggered on ${model} (${error.message}). Switching to ${fallback38} and pinning session ${sessionKey} to Gemini 3.8 Flash!`);
+                telemetry.recordFallback({
+                    type: 'security_filter',
+                    reason: error.reason || error.code || 'CONTENT_FILTER',
+                    fromModel: model,
+                    toModel: fallback38,
+                    sessionKey
+                });
+                if (sessionKey && sessionKey !== 'anon') {
+                    sessionRouter.pinModel(sessionKey, fallback38);
+                }
+                const fallbackRequest = { ...anthropicRequest, model: fallback38 };
+                const fallbackStream = sendMessageStream(fallbackRequest, accountManager, false); // false: no quota-fallback chain after a filter switch
+                // Tell Claude Code natively (UI notice) that this response came from a different model
+                yield* (isFallbackNoticeEnabled() ? withFallbackNotice(fallbackStream, model, fallback38) : fallbackStream);
+                return;
+            }
+            if (isContentFilterError(error)) {
+                // Filter hit on a model with no fallback left (3.8-flash): fail fast with a real error. Never pass the
+                // banner on as assistant text (it would become permanent context), and don't burn retries on it.
+                logger.warn(`[CloudCode] 🛡️ Filter triggered on ${model} and no fallback is left -> returning error (not text)`);
+                throw error;
+            }
             if (sessionKey) {
                 sessionRouter.unbindSession(sessionKey);
             }
@@ -792,9 +994,16 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
     // All retries exhausted - try fallback model if enabled
     if (fallbackEnabled) {
-        const fallbackModel = getFallbackModel(model);
+        const fallbackModel = getQuotaFallbackModel(model, isBreakerOpen);
         if (fallbackModel) {
             logger.warn(`[CloudCode] All retries exhausted for ${model}. Attempting fallback to ${fallbackModel} (streaming)`);
+            telemetry.recordFallback({
+                type: 'retries_exhausted',
+                reason: 'MAX_RETRIES_EXHAUSTED',
+                fromModel: model,
+                toModel: fallbackModel,
+                sessionKey: extractSessionKey(anthropicRequest)
+            });
             const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
             yield* sendMessageStream(fallbackRequest, accountManager, false);
             return;

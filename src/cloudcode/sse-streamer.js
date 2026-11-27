@@ -7,10 +7,114 @@
 
 import crypto from 'crypto';
 import { MIN_SIGNATURE_LENGTH, getModelFamily } from '../constants.js';
-import { EmptyResponseError } from '../errors.js';
+import { EmptyResponseError, ContentFilterError, DuplicateToolCallError } from '../errors.js';
 import { cacheSignature, cacheThinkingSignature } from '../format/signature-cache.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+
+import { SOFT_REFUSAL_TEXT_RE } from './filter-banner.js';
+export { SOFT_REFUSAL_TEXT_RE };
+
+/**
+ * Normalize a tool call into a canonical signature string for duplicate detection.
+ * For Read/read_file, normalizes path/offset/limit; for other tools, uses stable JSON keys.
+ * @param {string} name
+ * @param {Object} args
+ * @returns {string}
+ */
+export function normalizeToolCallSignature(name, args) {
+    const a = (args && typeof args === 'object') ? args : {};
+    if (name === 'Read' || name === 'read_file' || name === 'view_file') {
+        return JSON.stringify({
+            name,
+            file_path: a.file_path || a.path || a.AbsolutePath || '',
+            offset: a.offset ?? a.StartLine ?? null,
+            limit: a.limit ?? a.EndLine ?? null
+        });
+    }
+    const sorted = {};
+    for (const k of Object.keys(a).sort()) {
+        sorted[k] = a[k];
+    }
+    return JSON.stringify({ name, args: sorted });
+}
+
+/**
+ * Extract recent tool_use signatures from Anthropic messages so we can detect
+ * when a model is stuck repeating an identical Read / tool call.
+ * Returns { signatures: Set<string>, wastedReadDetected: boolean, repeatedHint: string|null }.
+ * @param {Array} messages
+ * @param {number} [lookbackAssistantTurns=6]
+ */
+export function extractRecentToolCallState(messages, lookbackAssistantTurns = 6) {
+    const signatures = new Set();
+    let wastedReadDetected = false;
+    let repeatedHint = null;
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return { signatures, wastedReadDetected, repeatedHint };
+    }
+
+    // Walk backwards across the last N assistant turns + following user tool_results
+    let assistantTurnsSeen = 0;
+    const recentToolIds = new Map(); // id -> { name, sig, target }
+
+    // First collect recent assistant tool_use blocks (within last lookbackAssistantTurns)
+    const startIdx = Math.max(0, messages.length - lookbackAssistantTurns * 2 - 2);
+    for (let i = messages.length - 1; i >= startIdx && assistantTurnsSeen < lookbackAssistantTurns; i--) {
+        const msg = messages[i];
+        if (!msg || !Array.isArray(msg.content)) continue;
+        if (msg.role === 'assistant') {
+            assistantTurnsSeen++;
+            for (const block of msg.content) {
+                if (block?.type === 'tool_use' && block.name) {
+                    const sig = normalizeToolCallSignature(block.name, block.input);
+                    signatures.add(sig);
+                    const target = block.input?.file_path || block.input?.path || '';
+                    if (block.id) {
+                        recentToolIds.set(block.id, { name: block.name, sig, target });
+                    }
+                    if (!repeatedHint) {
+                        repeatedHint = `${block.name}(${target || JSON.stringify(block.input || {}).slice(0, 80)})`;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check recent user tool_results for Claude Code's "Wasted call — file unchanged" signal
+    for (let i = messages.length - 1; i >= startIdx; i--) {
+        const msg = messages[i];
+        if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+            if (block?.type === 'tool_result') {
+                const text = typeof block.content === 'string'
+                    ? block.content
+                    : Array.isArray(block.content)
+                        ? block.content.map(c => c?.text || '').join(' ')
+                        : '';
+                if (text.includes('Wasted call') || text.includes('file unchanged since your last Read')) {
+                    wastedReadDetected = true;
+                    const meta = recentToolIds.get(block.tool_use_id);
+                    if (meta) {
+                        signatures.add(meta.sig);
+                        repeatedHint = `${meta.name}(${meta.target || ''})`;
+                    }
+                }
+            }
+        }
+    }
+
+    return { signatures, wastedReadDetected, repeatedHint };
+}
+
+/**
+ * Check if a model is a Hydrogen model (which redirects from 3.8-flash and can silently refuse)
+ */
+function isHydrogenModel(modelName) {
+    // Gemini 4 family (hydrogen + argon) can return the filter banner as plain text
+    // Every Gemini model behind Cloud Code can return the banner as plain text (3.8-flash included)
+    return typeof modelName === 'string' && /gemini|hydrogen|argon/i.test(modelName);
+}
 
 /**
  * Stream SSE response and yield Anthropic-format events
@@ -20,7 +124,7 @@ import { logger } from '../utils/logger.js';
  * @param {Function} [onThoughtOnly] - Optional async callback to retrieve continuation stream when model emits 0 text/tools
  * @yields {Object} Anthropic-format SSE events
  */
-export async function* streamSSEResponse(response, originalModel, onThoughtOnly = null, isSideQuestion = false) {
+export async function* streamSSEResponse(response, originalModel, onThoughtOnly = null, isSideQuestion = false, options = null) {
     const messageId = `msg_${crypto.randomBytes(16).toString('hex')}`;
     let hasEmittedStart = false;
     let blockIndex = 0;
@@ -38,6 +142,42 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
     let buffer = '';
 
     let hasEmittedTextOrTool = false;
+
+    const recentSignatures = options?.recentToolState?.signatures;
+    const hasRecentToolCheck = recentSignatures instanceof Set && recentSignatures.size > 0 && !isSideQuestion;
+    const isHydrogen = isHydrogenModel(originalModel);
+
+    // Buffer initial events when checking Hydrogen soft-refusals OR duplicate tool_use loops
+    // so that if we throw ContentFilterError / DuplicateToolCallError, 0 SSE events have been
+    // yielded to the client (keeping res.headersSent === false for transparent retry).
+    let bufferingForPrecheck = isHydrogen || hasRecentToolCheck;
+    let bufferedEvents = [];
+    let bufferedVisibleText = '';
+
+    const emitOrBuffer = function* (ev) {
+        if (bufferingForPrecheck) {
+            bufferedEvents.push(ev);
+        } else {
+            yield ev;
+        }
+    };
+
+    const flushBufferedEvents = function* () {
+        if (bufferingForPrecheck) {
+            bufferingForPrecheck = false;
+            for (const bev of bufferedEvents) yield bev;
+            bufferedEvents = [];
+        }
+    };
+
+    const assertNotDuplicateToolCall = (fnCall) => {
+        if (!hasRecentToolCheck || !bufferingForPrecheck || !fnCall?.name) return;
+        const sig = normalizeToolCallSignature(fnCall.name, fnCall.args);
+        if (recentSignatures.has(sig)) {
+            logger.warn(`[CloudCode] 🔁 Intercepted duplicate tool_use before flush: ${fnCall.name} (${sig})`);
+            throw new DuplicateToolCallError(fnCall.name, sig);
+        }
+    };
 
     while (true) {
         const { done, value } = await reader.read();
@@ -75,6 +215,16 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                 const candidates = innerResponse.candidates || [];
                 const firstCandidate = candidates[0] || {};
+
+                // Detect Google Safety / Content Filter blocks before emitting events
+                const blockReason = innerResponse.promptFeedback?.blockReason;
+                const finishReason = firstCandidate.finishReason;
+                const FILTER_REASONS = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'RECITATION', 'SPII', 'OTHER', 'IMAGE_SAFETY']);
+                if (blockReason || (finishReason && FILTER_REASONS.has(finishReason) && (!hasEmittedStart || bufferingForPrecheck))) {
+                    const reason = blockReason || finishReason;
+                    logger.warn(`[CloudCode] 🛡️ Content filter triggered (${reason}) on model ${originalModel}`);
+                    throw new ContentFilterError(`Content filter triggered: ${reason}`, reason);
+                }
 
                 // Log server-side Google Search Grounding if active
                 const grounding = firstCandidate.groundingMetadata || innerResponse.groundingMetadata;
@@ -171,6 +321,7 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                             });
 
                         } else if (part.functionCall) {
+                            assertNotDuplicateToolCall(part.functionCall);
                             hasEmittedTextOrTool = true;
 
                             if (isSideQuestion) {
@@ -286,7 +437,7 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                     // Emit message_start with the freshest token counts seen so far.
                     // If usageMetadata arrived in this same chunk (last-chunk pattern), these are
                     // real numbers. Otherwise they will be 0 — unavoidable without full buffering.
-                    yield {
+                    yield* emitOrBuffer({
                         type: 'message_start',
                         message: {
                             id: messageId,
@@ -303,10 +454,28 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                                 cache_creation_input_tokens: 0
                             }
                         }
-                    };
+                    });
+
+                    // Check if first-chunk text/tool already confirms or triggers precheck (soft-refusal or duplicate tool)
+                    if (bufferingForPrecheck) {
+                        for (const p of parts) {
+                            if (p.thought !== true && p.text) bufferedVisibleText += p.text;
+                        }
+                        if (isHydrogen && SOFT_REFUSAL_TEXT_RE.test(bufferedVisibleText)) {
+                            logger.warn(`[CloudCode] 🛡️ Soft content filter refusal detected in first chunk on model ${originalModel}`);
+                            throw new ContentFilterError('Content filter soft refusal in response text', 'SOFT_REFUSAL');
+                        }
+                        const hasToolInFirst = parts.some(p => p.functionCall);
+                        const refusalPrefixClear = !isHydrogen || (bufferedVisibleText.length >= 60 && !'This request was blocked'.startsWith(bufferedVisibleText.slice(0, 24)));
+                        // Flush if we have a validated tool call, OR if we have visible non-refusal text (when Hydrogen is clear or not Hydrogen)
+                        const hasVisibleTextInFirst = bufferedVisibleText.length > 0;
+                        if (hasToolInFirst || (hasVisibleTextInFirst && refusalPrefixClear)) {
+                            yield* flushBufferedEvents();
+                        }
+                    }
 
                     // Flush all buffered content events from this first-content chunk
-                    for (const ev of pendingEvents) yield ev;
+                    for (const ev of pendingEvents) yield* emitOrBuffer(ev);
 
                     // Check finish reason for first-chunk finishReason
                     if (firstCandidate.finishReason) {
@@ -326,16 +495,16 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                         if (currentBlockType !== 'thinking') {
                             if (currentBlockType !== null) {
-                                yield { type: 'content_block_stop', index: blockIndex };
+                                yield* emitOrBuffer({ type: 'content_block_stop', index: blockIndex });
                                 blockIndex++;
                             }
                             currentBlockType = 'thinking';
                             currentThinkingSignature = '';
-                            yield {
+                            yield* emitOrBuffer({
                                 type: 'content_block_start',
                                 index: blockIndex,
                                 content_block: { type: 'thinking', thinking: '' }
-                            };
+                            });
                         }
 
                         if (signature && signature.length >= MIN_SIGNATURE_LENGTH) {
@@ -347,19 +516,19 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                         if (text) {
                             accumulatedThinkingText += text;
-                            yield {
+                            yield* emitOrBuffer({
                                 type: 'content_block_delta',
                                 index: blockIndex,
                                 delta: { type: 'thinking_delta', thinking: text }
-                            };
+                            });
                         } else if (signature && currentBlockType === 'thinking') {
                             // Instant Thinking Pulse: when Gemini emits silent reasoning tokens or signature
                             // with empty text, yield a pulse so Claude Code immediately displays the thinking state
-                            yield {
+                            yield* emitOrBuffer({
                                 type: 'content_block_delta',
                                 index: blockIndex,
                                 delta: { type: 'thinking_delta', thinking: ' ' }
-                            };
+                            });
                         }
 
                     } else if (part.text !== undefined) {
@@ -370,36 +539,52 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
 
                         hasEmittedTextOrTool = true;
 
+                        if (bufferingForPrecheck) {
+                            bufferedVisibleText += part.text;
+                            if (isHydrogen && SOFT_REFUSAL_TEXT_RE.test(bufferedVisibleText)) {
+                                logger.warn(`[CloudCode] 🛡️ Soft content filter refusal detected in stream on model ${originalModel}`);
+                                throw new ContentFilterError('Content filter soft refusal in response text', 'SOFT_REFUSAL');
+                            }
+                        }
+
                         // Handle regular text
                         if (currentBlockType !== 'text') {
                             if (currentBlockType === 'thinking' && currentThinkingSignature) {
-                                yield {
+                                yield* emitOrBuffer({
                                     type: 'content_block_delta',
                                     index: blockIndex,
                                     delta: { type: 'signature_delta', signature: currentThinkingSignature }
-                                };
+                                });
                                 currentThinkingSignature = '';
                             }
                             if (currentBlockType !== null) {
-                                yield { type: 'content_block_stop', index: blockIndex };
+                                yield* emitOrBuffer({ type: 'content_block_stop', index: blockIndex });
                                 blockIndex++;
                             }
                             currentBlockType = 'text';
-                            yield {
+                            yield* emitOrBuffer({
                                 type: 'content_block_start',
                                 index: blockIndex,
                                 content_block: { type: 'text', text: '' }
-                            };
+                            });
                         }
 
-                        yield {
+                        yield* emitOrBuffer({
                             type: 'content_block_delta',
                             index: blockIndex,
                             delta: { type: 'text_delta', text: part.text }
-                        };
+                        });
+
+                        const refusalPrefixClear = !isHydrogen || (bufferedVisibleText.length >= 60 && !'This request was blocked'.startsWith(bufferedVisibleText.slice(0, 24)));
+                        if (bufferingForPrecheck && refusalPrefixClear) {
+                            yield* flushBufferedEvents();
+                        }
 
                     } else if (part.functionCall) {
+                        assertNotDuplicateToolCall(part.functionCall);
                         hasEmittedTextOrTool = true;
+
+                        yield* flushBufferedEvents();
 
                         if (isSideQuestion) {
                             // Claude Code /btw strictly disallows tool_use blocks.
@@ -535,6 +720,10 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 }
 
             } catch (parseError) {
+                if (parseError instanceof ContentFilterError || parseError?.name === 'ContentFilterError' ||
+                    parseError instanceof DuplicateToolCallError || parseError?.name === 'DuplicateToolCallError') {
+                    throw parseError;
+                }
                 logger.warn('[CloudCode] SSE parse error:', parseError.message);
             }
         }
@@ -545,20 +734,31 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
         logger.warn('[CloudCode] No content parts received, throwing for retry');
         throw new EmptyResponseError('No content parts received from API');
     } else {
-        // Close open thinking/text block
+        // Check buffered visible text for soft-refusal banner before flushing anything
+        if (bufferingForPrecheck && isHydrogen && SOFT_REFUSAL_TEXT_RE.test(bufferedVisibleText)) {
+            logger.warn(`[CloudCode] 🛡️ Soft content filter refusal detected at end of stream on model ${originalModel}`);
+            throw new ContentFilterError('Content filter soft refusal in response text', 'SOFT_REFUSAL');
+        }
+
+        // Close open thinking/text block (buffered if still buffering)
         if (currentBlockType !== null) {
             if (currentBlockType === 'thinking' && currentThinkingSignature) {
-                yield {
+                yield* emitOrBuffer({
                     type: 'content_block_delta',
                     index: blockIndex,
                     delta: { type: 'signature_delta', signature: currentThinkingSignature }
-                };
+                });
             }
-            yield { type: 'content_block_stop', index: blockIndex };
+            yield* emitOrBuffer({ type: 'content_block_stop', index: blockIndex });
             currentBlockType = null;
         }
 
-        // AUTO-RETRY CONTINUATION: If model emitted ONLY thinking and NO text/tool_use,
+        // If we already have valid text/tool output (e.g. short < 60 char response), flush buffered events now
+        if (hasEmittedTextOrTool) {
+            yield* flushBufferedEvents();
+        }
+
+        // AUTO-RETRY CONTINUATION: If model emitted ONLY thinking (or empty thoughtSignature) and NO text/tool_use,
         // invoke onThoughtOnly to seamlessly fetch and stream the actual tool calls/text!
         if (!hasEmittedTextOrTool && onThoughtOnly) {
             logger.info(`[CloudCode] 🔄 Thought-only response detected (${accumulatedThinkingText.length} chars). Invoking auto-retry continuation...`);
@@ -570,10 +770,12 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
                 if (continuationStream) {
                     for await (const contEvent of continuationStream) {
                         if (contEvent.type === 'content_block_start') {
+                            yield* flushBufferedEvents();
                             blockIndex++;
                             yield { ...contEvent, index: blockIndex };
                             hasEmittedTextOrTool = true;
                         } else if (contEvent.type === 'content_block_delta') {
+                            yield* flushBufferedEvents();
                             yield { ...contEvent, index: blockIndex };
                             hasEmittedTextOrTool = true;
                         } else if (contEvent.type === 'content_block_stop') {
@@ -593,9 +795,15 @@ export async function* streamSSEResponse(response, originalModel, onThoughtOnly 
             }
         }
 
-        // RECOVERY FALLBACK: If continuation also yielded nothing,
-        // yield a fallback text block so Claude Code does not crash on empty content.
+        // RECOVERY FALLBACK: If continuation also yielded nothing:
+        // - If we haven't flushed anything yet (Hydrogen buffering) OR there was 0 reasoning text,
+        //   throw EmptyResponseError so streaming-handler retries (and switches Hydrogen -> 3.8-flash)
+        //   instead of emitting a useless "Thinking complete." message.
         if (!hasEmittedTextOrTool) {
+            if (bufferingForPrecheck || accumulatedThinkingText.trim().length === 0) {
+                logger.warn(`[CloudCode] Empty/thought-only response with no output on ${originalModel} (thinkingChars=${accumulatedThinkingText.length}), throwing EmptyResponseError for retry/fallback`);
+                throw new EmptyResponseError('Model emitted no text or tool calls');
+            }
             blockIndex++;
             logger.info('[CloudCode] 💡 Model emitted reasoning without text, yielding completion text block');
             yield {

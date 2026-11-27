@@ -6,6 +6,8 @@
  */
 
 import { convertGoogleToAnthropic } from '../format/index.js';
+import { ContentFilterError, EmptyResponseError } from '../errors.js';
+import { SOFT_REFUSAL_TEXT_RE } from './sse-streamer.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -69,6 +71,13 @@ export async function parseThinkingSSEResponse(response, originalModel, onThough
 
                 const candidates = innerResponse.candidates || [];
                 const firstCandidate = candidates[0] || {};
+                const blockReason = innerResponse.promptFeedback?.blockReason;
+                const FILTER_REASONS = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'RECITATION', 'SPII', 'OTHER', 'IMAGE_SAFETY']);
+                if (blockReason || (firstCandidate.finishReason && FILTER_REASONS.has(firstCandidate.finishReason) && finalParts.every(p => p.thought))) {
+                    const reason = blockReason || firstCandidate.finishReason;
+                    logger.warn(`[CloudCode] 🛡️ Content filter triggered (${reason}) in non-streaming SSE on model ${originalModel}`);
+                    throw new ContentFilterError(`Content filter triggered: ${reason}`, reason);
+                }
                 if (firstCandidate.finishReason) {
                     finishReason = firstCandidate.finishReason;
                 }
@@ -97,6 +106,9 @@ export async function parseThinkingSSEResponse(response, originalModel, onThough
                     }
                 }
             } catch (e) {
+                if (e instanceof ContentFilterError || e?.name === 'ContentFilterError') {
+                    throw e;
+                }
                 logger.debug('[CloudCode] SSE parse warning:', e.message, 'Raw:', jsonText.slice(0, 100));
             }
         }
@@ -104,6 +116,15 @@ export async function parseThinkingSSEResponse(response, originalModel, onThough
 
     flushThinking();
     flushText();
+
+    // Detect soft-refusal banner returned as normal text on Hydrogen
+    if (typeof originalModel === 'string' && /gemini|hydrogen|argon/i.test(originalModel)) {
+        const visibleText = finalParts.filter(p => !p.thought && p.text).map(p => p.text).join('');
+        if (SOFT_REFUSAL_TEXT_RE.test(visibleText)) {
+            logger.warn(`[CloudCode] 🛡️ Soft content filter refusal detected in non-streaming SSE on model ${originalModel}`);
+            throw new ContentFilterError('Content filter soft refusal in response text', 'SOFT_REFUSAL');
+        }
+    }
 
     // AUTO-RETRY CONTINUATION: If model emitted only thinking and no text/tools
     const hasTextOrTool = finalParts.some(p => !p.thought);

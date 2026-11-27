@@ -42,7 +42,7 @@ export class QuotaTracker {
         if (account?.modelRateLimits?.[modelId]?.isRateLimited && account.modelRateLimits[modelId].resetTime > Date.now()) {
             return 0;
         }
-        const effectiveModel = (isClaude && !account?.quota?.models?.[modelId]) ? 'gemini-3.7-flash-tiered' : modelId;
+        const effectiveModel = (isClaude && !account?.quota?.models?.[modelId]) ? 'gemini-4-hydrogen-high' : modelId;
         if (account?.quota?.models?.[effectiveModel]) {
             const fraction = account.quota.models[effectiveModel].remainingFraction;
             if (typeof fraction === 'number') return fraction;

@@ -195,9 +195,9 @@ export function generateSmartUserAgent() {
     const osName = os === 'darwin' ? 'darwin' : (os === 'win32' ? 'win32' : 'linux');
     const archName = process.arch === 'x64' ? 'amd64' : process.arch;
 
-    // Use Antigravity CLI 1.4.12 User-Agent format so Cloud Code API unlocks
+    // Use Antigravity CLI 1.5.9 User-Agent (matches mitm capture of agy 1.5.9) format so Cloud Code API unlocks
     // CLI-gated models such as gemini-4-argon-{low,medium,high}
-    cachedUserAgent = `antigravity/cli/1.4.12 (aidev_client; os_type=${osName}; arch=${archName}; cl=1010700967; auth_method=consumer)`;
+    cachedUserAgent = `antigravity/cli/1.5.9 (aidev_client; os_type=${osName}; arch=${archName}; cl=1021519450; auth_method=consumer)`;
     return cachedUserAgent;
 }
 

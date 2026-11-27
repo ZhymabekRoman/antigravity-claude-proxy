@@ -136,13 +136,19 @@ export const ANTIGRAVITY_ENDPOINT_FALLBACKS = [
 // Required headers for Antigravity API requests
 // Headers for general Antigravity API requests
 // Strictly matches the generic 'u' method in main.js
-export const ANTIGRAVITY_HEADERS = {
-    'User-Agent': getPlatformUserAgent(),
-    'Content-Type': 'application/json',
-    'X-Client-Name': 'antigravity',
-    'X-Client-Version': getClientVersion(),
-    'x-goog-api-client': 'gl-node/18.18.2 fire/0.8.6 grpc/1.10.x' // Simulate Google Node.js client environment
-};
+export const ANTIGRAVITY_HEADERS = process.env.ANTIGRAVITY_LEGACY_HEADERS === '1'
+    ? {
+        'User-Agent': getPlatformUserAgent(),
+        'Content-Type': 'application/json',
+        'X-Client-Name': 'antigravity',
+        'X-Client-Version': getClientVersion(),
+        'x-goog-api-client': 'gl-node/18.18.2 fire/0.8.6 grpc/1.10.x'
+    }
+    // agy 1.5.9 (mitm capture) sends ONLY these on cloudcode-pa requests (+ Authorization, Accept-Encoding: gzip)
+    : {
+        'User-Agent': getPlatformUserAgent(),
+        'Content-Type': 'application/json'
+    };
 
 // Endpoint order for loadCodeAssist (prod first)
 // loadCodeAssist works better on prod for fresh/unprovisioned accounts
@@ -348,41 +354,45 @@ export const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful a
 
 // Model fallback mapping - maps primary model to fallback when quota exhausted
 export const MODEL_FALLBACK_MAP = {
-    'claude-opus-5-5-high': 'gemini-3.8-flash-tiered',
-    'claude-opus-5-5-medium': 'gemini-3.8-flash-tiered',
-    'claude-opus-5-5-low': 'gemini-3.8-flash-tiered',
-    'claude-sonnet-5-5-high': 'gemini-3.8-flash-tiered',
-    'claude-sonnet-5-5-medium': 'gemini-3.8-flash-tiered',
-    'claude-sonnet-5-5-low': 'gemini-3.8-flash-tiered',
-    'gemini-4-argon-high': 'gemini-3.8-flash-tiered',
-    'gemini-4-argon-medium': 'gemini-3.8-flash-tiered',
-    'gemini-4-argon-low': 'gemini-3.8-flash-tiered',
-    'claude-opus-4-6-thinking': 'gemini-3.7-flash-tiered',
-    'claude-opus-4-6': 'gemini-3.7-flash-tiered',
-    'claude-opus-4-5': 'gemini-3.7-flash-tiered',
+    'claude-opus-5-5-high': 'gemini-4-hydrogen-high',
+    'claude-opus-5-5-medium': 'gemini-4-hydrogen-medium',
+    'claude-opus-5-5-low': 'gemini-4-hydrogen-low',
+    'claude-sonnet-5-5-high': 'gemini-4-hydrogen-high',
+    'claude-sonnet-5-5-medium': 'gemini-4-hydrogen-medium',
+    'claude-sonnet-5-5-low': 'gemini-4-hydrogen-low',
+    'gemini-4-argon-high': 'gemini-4-hydrogen-high',
+    'gemini-4-argon-medium': 'gemini-4-hydrogen-medium',
+    'gemini-4-argon-low': 'gemini-4-hydrogen-low',
+    'gemini-4-hydrogen-xhigh': 'gemini-4-hydrogen-high',
+    'gemini-4-hydrogen-high': 'gemini-4-hydrogen-medium',
+    'gemini-4-hydrogen-medium': 'gemini-4-hydrogen-low',
+    'gemini-4-hydrogen-low': 'gemini-3.8-flash-tiered',
+    'claude-opus-4-6-thinking': 'gemini-4-hydrogen-high',
+    'claude-opus-4-6': 'gemini-4-hydrogen-high',
+    'claude-opus-4-5': 'gemini-4-hydrogen-high',
     'claude-sonnet-4-6': 'claude-sonnet-5-5-low',
     'claude-sonnet-4-5': 'claude-sonnet-5-5-low',
-    'claude-haiku-4-5': 'gemini-3.7-flash-tiered',
-    'claude-haiku-4-5-20251001': 'gemini-3.7-flash-tiered',
-    'gemini-3.1-pro-high': 'gemini-3.7-flash-tiered',
-    'gemini-3.1-pro-low': 'gemini-3.7-flash-tiered',
-    'gemini-3-flash': 'gemini-3.7-flash-tiered',
-    'gemini-3.8-flash-high': 'gemini-3.7-flash-tiered',
-    'gemini-3.8-flash-low': 'gemini-3.7-flash-tiered',
-    'gemini-3.8-flash-medium': 'gemini-3.7-flash-tiered',
-    'gemini-3.8-flash-tiered': 'gemini-3.7-flash-tiered',
-    'gemini-3.8-flash': 'gemini-3.7-flash-tiered',
-    'gemini-3.6-flash-high': 'gemini-3.7-flash-tiered',
-    'gemini-3.6-flash-low': 'gemini-3.7-flash-tiered',
-    'gemini-3.6-flash-medium': 'gemini-3.7-flash-tiered',
-    'gemini-3.6-flash-tiered': 'gemini-3.7-flash-tiered',
-    'gemini-3.5-flash-low': 'gemini-3.7-flash-tiered'
+    'claude-haiku-4-5': 'gemini-4-hydrogen-low',
+    'claude-haiku-4-5-20251001': 'gemini-4-hydrogen-low',
+    'gemini-3.1-pro-high': 'gemini-4-hydrogen-high',
+    'gemini-3.1-pro-low': 'gemini-4-hydrogen-low',
+    'gemini-3-flash': 'gemini-4-hydrogen-high',
+    'gemini-3.8-flash-high': 'gemini-4-hydrogen-high',
+    'gemini-3.8-flash-low': 'gemini-4-hydrogen-low',
+    'gemini-3.8-flash-medium': 'gemini-4-hydrogen-medium',
+    'gemini-3.8-flash-tiered': 'gemini-4-hydrogen-high',
+    'gemini-3.8-flash': 'gemini-4-hydrogen-high',
+    'gemini-3.6-flash-high': 'gemini-4-hydrogen-high',
+    'gemini-3.6-flash-low': 'gemini-4-hydrogen-low',
+    'gemini-3.6-flash-medium': 'gemini-4-hydrogen-medium',
+    'gemini-3.6-flash-tiered': 'gemini-4-hydrogen-high',
+    'gemini-3.5-flash-low': 'gemini-4-hydrogen-low'
 };
 
 // Default test models for each family (used by test suite)
 export const TEST_MODELS = {
     claude: 'claude-sonnet-5-5-low',
-    gemini: 'gemini-3.8-flash-low'
+    gemini: 'gemini-4-hydrogen-low'
 };
 
 // Default Claude CLI presets (used by WebUI settings)
@@ -405,11 +415,11 @@ export const DEFAULT_PRESETS = [
         config: {
             ANTHROPIC_AUTH_TOKEN: 'test',
             ANTHROPIC_BASE_URL: 'http://localhost:8080',
-            ANTHROPIC_MODEL: 'gemini-3.8-flash-low',
-            ANTHROPIC_DEFAULT_OPUS_MODEL: 'gemini-3.8-flash-high',
-            ANTHROPIC_DEFAULT_SONNET_MODEL: 'gemini-3.8-flash-medium',
-            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-3.8-flash-low',
-            CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-3.8-flash-low',
+            ANTHROPIC_MODEL: 'gemini-4-hydrogen-high',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'gemini-4-hydrogen-high',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'gemini-4-hydrogen-medium',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-4-hydrogen-low',
+            CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-4-hydrogen-low',
             ENABLE_EXPERIMENTAL_MCP_CLI: 'true'
         }
     },
@@ -421,8 +431,8 @@ export const DEFAULT_PRESETS = [
             ANTHROPIC_MODEL: 'claude-sonnet-5-5-low',
             ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5-high',
             ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5-low',
-            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-3.8-flash-low',
-            CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-3.8-flash-low',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'gemini-4-hydrogen-low',
+            CLAUDE_CODE_SUBAGENT_MODEL: 'gemini-4-hydrogen-low',
             ENABLE_EXPERIMENTAL_MCP_CLI: 'true'
         }
     }

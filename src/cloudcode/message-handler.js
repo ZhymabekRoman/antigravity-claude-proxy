@@ -5,6 +5,7 @@
  * retry logic, and endpoint failover.
  */
 
+import { isTransientProcessingError } from '../errors.js';
 import {
     ANTIGRAVITY_ENDPOINT_FALLBACKS,
     MAX_RETRIES,
@@ -19,13 +20,17 @@ import {
     isThinkingModel
 } from '../constants.js';
 import { convertGoogleToAnthropic, sanitizeThoughtSignatures } from '../format/index.js';
-import { isRateLimitError, isAuthError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
+import { isRateLimitError, isAuthError, isContentFilterError, ContentFilterError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
+import { getFilterFallback38Model } from './model-splitter.js';
 import { formatDuration, sleep, isNetworkError, throttledFetch } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
 import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
-import { getFallbackModel } from '../fallback-config.js';
+import { checkBreaker, markProbeRequest, isProbeRequest, markExhausted, markHealthy, isExhaustionError, CircuitOpenError, noteAttempt, getTriedAccounts, PROBE_ATTEMPTS, isBreakerOpen } from './exhaustion-breaker.js';
+import { getFallbackModel, getQuotaFallbackModel } from '../fallback-config.js';
+import { hasAnyLastResort } from '../providers/copilot-fallback.js';
+import { getClientSignal, isClientAborted } from '../utils/client-signal.js';
 import {
     getRateLimitBackoff,
     clearRateLimitState,
@@ -56,6 +61,32 @@ import { sendVertexMessage } from './vertex-streamer.js';
  * @throws {Error} If max retries exceeded or no accounts available
  */
 export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false) {
+    const brkModel = anthropicRequest.model;
+    const brk = checkBreaker(brkModel);
+    if (brk.state === 'open' && hasAnyLastResort()) {
+        const fb = fallbackEnabled ? getQuotaFallbackModel(brkModel, isBreakerOpen) : null;
+        if (fb && fb !== brkModel && !isBreakerOpen(fb)) {
+            logger.info(`[Breaker] 🔀 ${brkModel} circuit open -> trying ${fb}`);
+            return await sendMessage({ ...anthropicRequest, model: fb }, accountManager, false);
+        }
+        throw new CircuitOpenError(brkModel, brk.retryInMs);
+    }
+    if (brk.state === 'probe') markProbeRequest(anthropicRequest);
+    try {
+        return await sendMessageInner(anthropicRequest, accountManager, fallbackEnabled);
+    } catch (err) {
+        if (isExhaustionError(err) && !(err instanceof CircuitOpenError)) {
+            const tried = getTriedAccounts(anthropicRequest);
+            let untriedAvailable = 0;
+            try { untriedAvailable = accountManager.getAvailableAccounts(brkModel).filter(a => !tried.has(a.email)).length; } catch { /* keep 0 */ }
+            markExhausted(brkModel, { triedCount: tried.size, untriedAvailable });
+            sessionRouter.noteSessionExhaustion(extractSessionKey(anthropicRequest), brkModel, tried.size);
+        }
+        throw err;
+    }
+}
+
+async function sendMessageInner(anthropicRequest, accountManager, fallbackEnabled = false) {
     const tReqStart = Date.now();
     const model = anthropicRequest.model;
     const isThinking = isThinkingModel(model);
@@ -75,9 +106,13 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
-    const maxAttempts = MAX_RETRIES;
+    const maxAttempts = isProbeRequest(anthropicRequest) ? PROBE_ATTEMPTS : MAX_RETRIES;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (isClientAborted(anthropicRequest)) {
+            logger.info('[CloudCode] 🚪 Client disconnected -> aborting upstream work');
+            throw new Error('Client disconnected');
+        }
         // Clear any expired rate limits before picking
         accountManager.clearExpiredLimits();
 
@@ -97,9 +132,16 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
             if (accountManager.isAllRateLimited(model)) {
                 if (fallbackEnabled) {
-                    const fallbackModel = getFallbackModel(model);
+                    const fallbackModel = getQuotaFallbackModel(model, isBreakerOpen);
                     if (fallbackModel && fallbackModel !== model) {
                         logger.info(`[CloudCode] 🔀 All accounts rate-limited for ${model}, dynamically falling back to ${fallbackModel}`);
+                        telemetry.recordFallback({
+                            type: 'rate_limit',
+                            reason: 'ALL_ACCOUNTS_RATE_LIMITED',
+                            fromModel: model,
+                            toModel: fallbackModel,
+                            sessionKey: extractSessionKey(anthropicRequest)
+                        });
                         const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
                         return await sendMessage(fallbackRequest, accountManager, false);
                     }
@@ -153,6 +195,8 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
         logger.info(`[CloudCode] 🎯 Attempt ${attempt + 1}/${maxAttempts} for ${model} -> selected account: ${account.email} (pinned: ${account === pinnedAccount})`);
 
+        noteAttempt(anthropicRequest, account.email);
+
         try {
             // ── Gemini-BYOK direct execution ──────────────────────────
             if (account.source === 'gemini-byok' || (account.apiKey && !account.refreshToken)) {
@@ -160,6 +204,8 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                 const result = await sendGeminiByokMessage(anthropicRequest, account, accountManager);
                 clearRateLimitState(account.email, model);
                 accountManager.notifySuccess(account, model);
+                markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                 return result;
             }
 
@@ -183,6 +229,8 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                 const result = await sendVertexMessage(anthropicRequest, token, gcpProject, account, accountManager);
                 clearRateLimitState(account.email, model);
                 accountManager.notifySuccess(account, model);
+                markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                 return result;
             }
 
@@ -209,6 +257,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                     logger.info(`[CloudCode] 🌐 Dispatching request -> ${endpoint} (account: ${account.email}, isThinking: ${isThinking})`);
 
                     const response = await throttledFetch(url, {
+                        signal: getClientSignal(anthropicRequest),
                         method: 'POST',
                         headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', payload.request.sessionId, account.email),
                         body: JSON.stringify(payload)
@@ -299,11 +348,12 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                                 logger.info(`[CloudCode] Rate limit on ${endpoint} for ${account.email}, falling back to next endpoint (${ANTIGRAVITY_ENDPOINT_FALLBACKS[endpointIndex + 1]})...`);
                                 endpointIndex++;
                                 continue;
-                            } else if (smartBackoffMs > DEFAULT_COOLDOWN_MS) {
-                                // Long-term quota exhaustion across all endpoints - switch account fast
-                                logger.info(`[CloudCode] Quota exhausted across all endpoints for ${account.email} (${formatDuration(smartBackoffMs)}), switching account...`);
-                                if (SWITCH_ACCOUNT_DELAY_MS > 0) await sleep(SWITCH_ACCOUNT_DELAY_MS);
-                                accountManager.markRateLimited(account.email, smartBackoffMs, model);
+                            } else if (smartBackoffMs > DEFAULT_COOLDOWN_MS || backoff.delayMs > DEFAULT_COOLDOWN_MS || backoff.attempt >= 2) {
+                                // Quota exhaustion or repeated 429 across all endpoints - switch account fast instead of looping forever
+                                const cooldownMs = Math.max(smartBackoffMs, backoff.delayMs);
+                                logger.info(`[CloudCode] Quota exhausted across all endpoints for ${account.email} (${formatDuration(cooldownMs)}, attempt ${backoff.attempt}), switching account...`);
+                                if (SWITCH_ACCOUNT_DELAY_MS > 0 && accountManager.getAvailableAccounts(model).filter(a => a.email !== account.email && !getTriedAccounts(anthropicRequest).has(a.email)).length === 0) await sleep(SWITCH_ACCOUNT_DELAY_MS); // fresh accounts left -> switch immediately
+                                accountManager.markRateLimited(account.email, cooldownMs, model);
                                 throw new Error(`QUOTA_EXHAUSTED: ${errorText}`);
                             } else {
                                 // Short-term rate limit - use exponential backoff delay
@@ -341,9 +391,24 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                             // EXCEPTION: "thought signature" / "Corrupted thought signature" happens when switching
                             // accounts/backends across turns with mismatched signatures. Sanitize and retry immediately.
                             if (response.status === 400) {
+                                if (
+                                    /PROHIBITED_CONTENT|SAFETY|BLOCKLIST|RECITATION|SPII|IMAGE_SAFETY|content.*filter|blocked.*safety/i.test(errorText) &&
+                                    !model.includes('3.8-flash')
+                                ) {
+                                    throw new ContentFilterError(`HTTP 400 content filter: ${errorText.substring(0, 120)}`, 'PROHIBITED_CONTENT');
+                                }
                                 if (errorText.toLowerCase().includes('thought signature')) {
                                     logger.warn(`[CloudCode] ⚠️ "Corrupted/Invalid thought signature" received for ${account.email}. Retrying with sanitized skip signatures...`);
                                     sanitizeThoughtSignatures(payload);
+                                    continue;
+                                }
+                                if (isTransientProcessingError(errorText)) {
+                                    // Google's "could not be processed by the model" 400 is account/slot specific: the same request succeeds on another
+                                    // account. Hammering the same account does not help, so unbind the session and rotate (next endpoint -> next account).
+                                    logger.warn(`[CloudCode] Transient 400 "could not be processed by the model" on ${account.email} - rotating account`);
+                                    if (sessionKey) sessionRouter.unbindSession(sessionKey);
+                                    lastError = new Error(`Transient 400 on ${account.email}: ${errorText.substring(0, 120)}`);
+                                    endpointIndex = ANTIGRAVITY_ENDPOINT_FALLBACKS.length;   // skip remaining endpoints, go to the next account
                                     continue;
                                 }
                                 logger.error(`[CloudCode] Invalid request (400): ${errorText.substring(0, 200)}`);
@@ -405,6 +470,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                                     }
                                 }
                                 const contRes = await throttledFetch(url, {
+                                    signal: getClientSignal(anthropicRequest),
                                     method: 'POST',
                                     headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, account.email),
                                     body: JSON.stringify(contPayload)
@@ -453,6 +519,8 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                         // Clear rate limit state on success
                         clearRateLimitState(account.email, model);
                         accountManager.notifySuccess(account, model);
+                        markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                         return result;
                     }
 
@@ -481,9 +549,14 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                     // Clear rate limit state on success
                     clearRateLimitState(account.email, model);
                     accountManager.notifySuccess(account, model);
+                    markHealthy(model); // served by this model -> close its exhaustion breaker
+        sessionRouter.noteSessionSuccess(extractSessionKey(anthropicRequest));
                     return result;
 
                 } catch (endpointError) {
+                    if (isContentFilterError(endpointError)) {
+                        throw endpointError;
+                    }
                     if (isRateLimitError(endpointError)) {
                         throw endpointError; // Re-throw to trigger account switch
                     }
@@ -515,6 +588,29 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
             }
 
         } catch (error) {
+            if (isClientAborted(anthropicRequest)) throw error; // client gone: do not retry other accounts
+            if (isContentFilterError(error) && !model.includes('3.8-flash')) {
+                const fallback38 = getFilterFallback38Model(model);
+                logger.warn(`[CloudCode] 🛡️ Filter triggered on ${model} (${error.message}). Switching to ${fallback38} and pinning session ${sessionKey} to Gemini 3.8 Flash!`);
+                telemetry.recordFallback({
+                    type: 'security_filter',
+                    reason: error.reason || error.code || 'CONTENT_FILTER',
+                    fromModel: model,
+                    toModel: fallback38,
+                    sessionKey
+                });
+                if (sessionKey && sessionKey !== 'anon') {
+                    sessionRouter.pinModel(sessionKey, fallback38);
+                }
+                const fallbackRequest = { ...anthropicRequest, model: fallback38 };
+                return await sendMessage(fallbackRequest, accountManager, false); // false: no quota-fallback chain after a filter switch
+            }
+            if (isContentFilterError(error)) {
+                // Filter hit on a model with no fallback left (3.8-flash): fail fast with a real error. Never pass the
+                // banner on as assistant text (it would become permanent context), and don't burn retries on it.
+                logger.warn(`[CloudCode] 🛡️ Filter triggered on ${model} and no fallback is left -> returning error (not text)`);
+                throw error;
+            }
             if (sessionKey) {
                 sessionRouter.unbindSession(sessionKey);
             }
@@ -577,9 +673,16 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
     // All retries exhausted - try fallback model if enabled
     if (fallbackEnabled) {
-        const fallbackModel = getFallbackModel(model);
+        const fallbackModel = getQuotaFallbackModel(model, isBreakerOpen);
         if (fallbackModel) {
             logger.warn(`[CloudCode] All retries exhausted for ${model}. Attempting fallback to ${fallbackModel}`);
+            telemetry.recordFallback({
+                type: 'retries_exhausted',
+                reason: 'MAX_RETRIES_EXHAUSTED',
+                fromModel: model,
+                toModel: fallbackModel,
+                sessionKey: extractSessionKey(anthropicRequest)
+            });
             const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
             return await sendMessage(fallbackRequest, accountManager, false);
         }

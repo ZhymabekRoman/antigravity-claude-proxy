@@ -183,11 +183,12 @@ function parseRetryDelayMs(errorText) {
  * @returns {string} Clean Google AI Studio model name
  */
 export function mapToGeminiStudioModel(model) {
-    if (!model) return 'gemini-3.7-flash';
+    if (!model) return 'gemini-4-hydrogen-high';
     const m = model.toLowerCase();
-    // Direct 3.8 / 3.7 mapping
-    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return isReroute38To37() ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
-    if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
+    // Redirect 3.8 / 3.7 / hydrogen mapping
+    if (m.includes('hydrogen')) return model;
+    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return 'gemini-4-hydrogen-high';
+    if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-4-hydrogen-high';
     if (m.includes('3.7-pro') || m.includes('3-7-pro') || m.includes('3.1-pro')) return 'gemini-3.1-pro-preview';
     if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
     if (m.includes('3.5-flash') || m.includes('3-5-flash')) return 'gemini-3.5-flash';

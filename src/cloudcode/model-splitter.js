@@ -9,14 +9,25 @@ import { isModelSplitEnabled, getModelSplitWeights, isReroute38To37 } from '../c
 import { logger } from '../utils/logger.js';
 import { sessionRouter } from './session-manager.js';
 
-export const MODEL_37_FLASH = 'gemini-3.7-flash-tiered';
-export const MODEL_38_FLASH = 'gemini-3.8-flash-tiered';
+export const MODEL_37_FLASH = 'gemini-4-hydrogen-high';
+export const MODEL_38_FLASH = 'gemini-4-hydrogen-high';
+export const MODEL_HYDROGEN_LOW = 'gemini-4-hydrogen-low';
+export const MODEL_HYDROGEN_MEDIUM = 'gemini-4-hydrogen-medium';
+export const MODEL_HYDROGEN_HIGH = 'gemini-4-hydrogen-high';
+export const MODEL_HYDROGEN_XHIGH = 'gemini-4-hydrogen-xhigh';
 
 /**
- * Check if a requested model string is a Flash candidate subject to splitting
- * @param {string} model 
- * @returns {boolean}
+ * Map a Gemini 4 Hydrogen model (or Flash alias) to its matching Gemini 3.8 Flash model
+ * when content/safety filters are triggered.
+ * @param {string} model
+ * @returns {string}
  */
+export function getFilterFallback38Model(model) {
+    const m = (model || '').toLowerCase();
+    if (m.endsWith('-low') || m === 'flash-low') return 'gemini-3.8-flash-low';
+    if (m.endsWith('-medium') || m.endsWith('-med') || m === 'flash-med' || m === 'flash-medium') return 'gemini-3.8-flash-medium';
+    return 'gemini-3.8-flash-high';
+}
 export function isFlashCandidate(model) {
     if (!model || typeof model !== 'string') return false;
     const m = model.toLowerCase();
@@ -25,6 +36,7 @@ export function isFlashCandidate(model) {
         m.includes('3-8-flash') ||
         m.includes('3.7-flash') ||
         m.includes('3-7-flash') ||
+        m.includes('hydrogen') ||
         m === 'flash' ||
         m === 'flash-low' ||
         m === 'flash-med' ||
@@ -106,37 +118,29 @@ export class ModelSplitter {
             return requestedModel;
         }
 
-        // 1. Session Attachment: Check if this session already has a pinned model
+        // 1. If this session was pinned to Gemini 3.8 Flash due to a content/safety filter trigger,
+        // stick to Gemini 3.8 Flash for the remainder of the session!
         if (sessionKey && sessionKey !== 'anon') {
-            const pinnedModel = sessionRouter.getPinnedModel(sessionKey);
-            if (pinnedModel && (pinnedModel === MODEL_37_FLASH || pinnedModel === MODEL_38_FLASH)) {
-                logger.info(`[ModelSplitter] 🎯 Session ${sessionKey} attached to pinned model: ${pinnedModel} (TPU cache affinity preserved)`);
+            const pinnedModel = sessionRouter.getActivePin(sessionKey);
+            if (pinnedModel && pinnedModel.includes('3.8-flash')) {
+                logger.info(`[ModelSplitter] 🛡️ Session ${sessionKey} is filter-pinned to ${pinnedModel} — sticking to Gemini 3.8 Flash`);
                 return pinnedModel;
             }
         }
 
-        // 2. If Model Split is enabled, use Smooth Weighted Round-Robin
-        if (isModelSplitEnabled()) {
-            const selectedModel = this.selectNextModel();
-            // Pre-pin the model to the session in SessionRouter
-            if (sessionKey && sessionKey !== 'anon') {
-                sessionRouter.pinModel(sessionKey, selectedModel);
-            }
-            logger.info(`[ModelSplitter] ⚖️ New session ${sessionKey}: pinned to ${selectedModel} via weighted split`);
-            return selectedModel;
-        }
-
-        // 3. Fallback: When Model Split disabled, check reroute38To37 toggle
-        if (isReroute38To37()) {
-            return MODEL_37_FLASH;
-        }
-
-        // 4. Default direct mapping based on requested string
         const m = requestedModel.toLowerCase();
-        if (m.includes('3.7-flash') || m.includes('3-7-flash')) {
-            return MODEL_37_FLASH;
+        // Redirect all 3.8-flash / 3.7-flash / hydrogen variants directly to the matching gemini-4-hydrogen tier
+        if (m.endsWith('-xhigh') || m === 'hydrogen-xhigh') {
+            return MODEL_HYDROGEN_XHIGH;
         }
-        return MODEL_38_FLASH;
+        if (m.endsWith('-low') || m === 'flash-low' || m === 'hydrogen-low') {
+            return MODEL_HYDROGEN_LOW;
+        }
+        if (m.endsWith('-medium') || m.endsWith('-med') || m === 'flash-med' || m === 'flash-medium' || m === 'hydrogen-medium' || m === 'hydrogen-med') {
+            return MODEL_HYDROGEN_MEDIUM;
+        }
+        // Default all gemini-3.8-flash, gemini-3.8-flash-tiered, gemini-3.8-flash-high, gemini-4-hydrogen, etc. to gemini-4-hydrogen-high
+        return MODEL_HYDROGEN_HIGH;
     }
 }
 

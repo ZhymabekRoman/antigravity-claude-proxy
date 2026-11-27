@@ -11,14 +11,19 @@ import { fileURLToPath } from 'url';
 import {
     isAlwaysCopilot,
     getCopilotUpstream,
+    getCopilotFallbackConfig,
     shouldFallbackToCopilot,
     canFallbackToCopilot,
     streamCopilotFallback,
-    sendCopilotFallback
+    sendCopilotFallback,
+    hasLastResortFallback,
+    streamLastResortChain,
+    sendLastResortChain
 } from './providers/copilot-fallback.js';
+import { attachClientSignal } from './utils/client-signal.js';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
 import { sessionRouter } from './cloudcode/session-manager.js';
-import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream, isSubagentRequest, getSubagentUpstream } from './providers/router.js';
+import { findUpstreamForModel, streamCustomUpstream, sendCustomUpstream, isSubagentRequest, getSubagentUpstream, getViaGeminiModel } from './providers/router.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
 
@@ -29,6 +34,7 @@ import { REQUEST_BODY_LIMIT, isReroute38To37, isModelSplitEnabled } from './cons
 import { AccountManager } from './account-manager/index.js';
 import crypto from 'crypto';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
+import { isCompactRequest } from './format/request-converter.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger, logContext } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
@@ -170,7 +176,24 @@ function parseError(error) {
     let errorMessage = error.message;
     logger.error(`[Server] formatApiError caught error:`, error.message, error.stack);
 
-    if (error.message.includes('401') || error.message.includes('UNAUTHENTICATED')) {
+    if (error?.name === 'CircuitOpenError') {
+        errorType = 'rate_limit_error';
+        statusCode = 429;
+        errorMessage = `RESOURCE_EXHAUSTED: ${error.message}`;
+    } else if (error?.name === 'TransientProcessingError' || /^overloaded_error:/.test(error.message || '')) {
+        // Transient Google failure after retries: 529 overloaded_error is retried by Claude Code (a 400 kills subagents)
+        errorType = 'overloaded_error';
+        statusCode = 529;
+    } else if (error?.name === 'ContentFilterError') {
+        // Not retriable: map to a 400 so Claude Code shows it as an API error and does not store/replay it as context
+        errorType = 'invalid_request_error';
+        statusCode = 400;
+        errorMessage = `Blocked by Gemini safety filters (no fallback model left): ${error.reason || 'SAFETY'}. Rephrase the last prompt.`;
+    } else if (/prompt is too long:\s*\d+\s*tokens?\s*>\s*\d+/i.test(error.message)) {
+        // Standard Anthropic context-overflow error -> Claude Code reactive auto-compaction
+        errorType = 'invalid_request_error';
+        statusCode = 400;
+    } else if (error.message.includes('401') || error.message.includes('UNAUTHENTICATED')) {
         errorType = 'authentication_error';
         statusCode = 401;
         errorMessage = 'Authentication failed. Make sure Antigravity is running with a valid token.';
@@ -196,10 +219,13 @@ function parseError(error) {
         // Catch Google CloudCode / Gemini token limit exceeded errors and translate to Anthropic's standard format.
         // Claude Code specifically checks for `/prompt is too long[^0-9]*(\d+)\s*tokens?\s*>(\d+)/i`
         // to trigger reactive auto-compaction rather than crashing subagents with an unhandled 400 error.
+        // NOTE: Claude Code computes `gap = actualTokens - limitTokens` to decide how many message groups to summarize.
+        // Reporting `limit + 1` gives `gap = 1`, which causes reactive compaction's summarize request to also exceed the limit!
+        // Report a realistic 120k token overshoot so `hTe()` trims enough history on attempt 1.
         const tokenLimitMatch = error.message.match(/exceeds the maximum number of tokens allowed\s*(\d+)/i);
         if (tokenLimitMatch) {
             const limit = parseInt(tokenLimitMatch[1], 10);
-            errorMessage = `prompt is too long: ${limit + 1} tokens > ${limit} maximum`;
+            errorMessage = `prompt is too long: ${limit + 120000} tokens > ${limit} maximum`;
             logger.warn(`[Server] 🛡️ Translated upstream token limit error to Anthropic auto-compact format: "${errorMessage}"`);
         } else {
             const msgMatch = error.message.match(/"message":"([^"]+)"/);
@@ -747,6 +773,27 @@ app.get('/api/benchmarks', (req, res) => {
 });
 
 /**
+ * GET /api/analytics/fallbacks - Model fallback & security-filter analytics
+ */
+app.get('/api/analytics/fallbacks', (req, res) => {
+    try {
+        const metrics = telemetry.getMetrics();
+        res.json({
+            status: 'ok',
+            fallbackEnabled: FALLBACK_ENABLED,
+            copilotFallbackEnabled: !!getCopilotFallbackConfig(),
+            totalTurns: metrics.totalTurns,
+            fallbackAnalytics: metrics.fallbackAnalytics
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            error: error.message
+        });
+    }
+});
+
+/**
  * GET /api/sessions - Real-time session analytics
  */
 app.get('/api/sessions', async (req, res) => {
@@ -862,7 +909,7 @@ app.post('/v1/messages', async (req, res) => {
         } = req.body;
 
         // Resolve model mapping if configured or use built-in aliases
-        let requestedModel = model || 'gemini-3.8-flash-tiered';
+        let requestedModel = model || 'gemini-4-hydrogen-high';
 
         // 1. Check Subagent Dedicated Router
         let targetUpstream = null;
@@ -877,9 +924,28 @@ app.post('/v1/messages', async (req, res) => {
             }
         }
 
+        // 1b. Compaction routing: every /compact / auto-compact summarization goes through one configured model
+        // (default Gemini 4 Hydrogen), overriding the session model, a strata/custom upstream and subagent routing.
+        const compactCfg = config.compactRouting || {};
+        if (compactCfg.enabled !== false && /^gemini-/i.test(compactCfg.model || '') && isCompactRequest(messages)) {
+            logger.info(`[API] 🗜️ Compaction request detected: ${requestedModel} -> ${compactCfg.model}`);
+            requestedModel = compactCfg.model;
+            targetUpstream = null;
+        }
+
         // 2. Dynamic Upstream Provider Check (e.g. Strata for strata*/swift*, CheaperInference for GLM / Qwen / etc.)
         // Flag: always route to GitHub Copilot (copilot-api, fusion-standard), bypassing Google
-        const customUpstream = targetUpstream || (isAlwaysCopilot() ? getCopilotUpstream() : findUpstreamForModel(requestedModel));
+        let customUpstream = targetUpstream || (isAlwaysCopilot() ? getCopilotUpstream() : findUpstreamForModel(requestedModel));
+        // Flag upstreams.<name>.viaGemini: serve this upstream's models through the Gemini path instead
+        // (explicit subagentRouting targets are left alone).
+        if (customUpstream && !targetUpstream) {
+            const viaGemini = getViaGeminiModel(customUpstream);
+            if (viaGemini) {
+                logger.info(`[API] 🔁 Upstream "${customUpstream.name}" flagged viaGemini: ${requestedModel} -> ${viaGemini} (Gemini path)`);
+                requestedModel = viaGemini;
+                customUpstream = null;
+            }
+        }
         if (customUpstream) {
             if (!messages || !Array.isArray(messages)) {
                 return res.status(400).json({
@@ -961,12 +1027,17 @@ app.post('/v1/messages', async (req, res) => {
                         ) {
                             statusCode = 400;
                             errorType = 'invalid_request_error';
-                            // Extract token counts if available or format standard Anthropic string
+                            const stdMatch = errMsg.match(/prompt is too long:\s*(\d+)\s*tokens?\s*>\s*(\d+)/i);
                             const tokensMatch = errMsg.match(/prompt\s*\((\d+)\s*tokens?\).*context\s*\((\d+)\)/i);
-                            if (tokensMatch) {
-                                formattedMessage = `prompt is too long: ${tokensMatch[1]} tokens > ${tokensMatch[2]} maximum`;
+                            if (stdMatch || tokensMatch) {
+                                const m = stdMatch || tokensMatch;
+                                const rawActual = parseInt(m[1], 10);
+                                const limit = parseInt(m[2], 10);
+                                // Ensure at least an 80k gap so Claude Code's reactive compactor hTe() trims enough rounds in attempt 1
+                                const actual = Math.max(rawActual, limit + 80000);
+                                formattedMessage = `prompt is too long: ${actual} tokens > ${limit} maximum`;
                             } else {
-                                formattedMessage = `prompt is too long: request exceeds the context window limit`;
+                                formattedMessage = `prompt is too long: 500000 tokens > 380000 maximum`;
                             }
                         }
 
@@ -1009,11 +1080,33 @@ app.post('/v1/messages', async (req, res) => {
         // Strip Claude Code context suffix like "[1m]" if present
         requestedModel = requestedModel.replace(/\[\d+[mk]\]$/i, '');
 
-        const modelMapping = config.modelMapping || {};
-        if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
-            const targetModel = modelMapping[requestedModel].mapping;
-            logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
-            requestedModel = targetModel;
+        // 0. Filter-Pinned Session Override: If this session previously triggered a content/safety filter
+        // on Gemini 4 Hydrogen, stick to the pinned Gemini 3.8 Flash model for the rest of the session!
+        const pinnedSessionModel = (sessionKey && sessionKey !== 'anon') ? sessionRouter.getActivePin(sessionKey) : null;
+        if (pinnedSessionModel && pinnedSessionModel.includes('3.8-flash') && modelSplitter.isFlashCandidate(requestedModel)) {
+            logger.info(`[Server] 🛡️ Session ${sessionKey} is filter-pinned to ${pinnedSessionModel} (bypassing Hydrogen redirect for ${requestedModel})`);
+            telemetry.recordFilterBypass({ sessionKey });
+            requestedModel = pinnedSessionModel;
+            if (!req.body.thinking) {
+                if (requestedModel.endsWith('-low')) {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+                } else if (requestedModel.endsWith('-medium') || requestedModel.endsWith('-med')) {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+                } else {
+                    req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+                }
+            }
+        } else {
+            const modelMapping = config.modelMapping || {};
+            if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
+                const targetModel = modelMapping[requestedModel].mapping;
+                logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
+                requestedModel = targetModel;
+            }
+        }
+
+        if (pinnedSessionModel && pinnedSessionModel.includes('3.8-flash') && requestedModel === pinnedSessionModel) {
+            // Already resolved to filter-pinned 3.8-flash model
         } else if (
             requestedModel === 'claude-sonnet-5-5-low' ||
             requestedModel === 'claude-low' ||
@@ -1037,6 +1130,17 @@ app.post('/v1/messages', async (req, res) => {
         ) {
             requestedModel = 'claude-sonnet-5-5-high';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (
+            requestedModel === 'claude-xhigh' ||
+            requestedModel === 'claude-opus-xhigh' ||
+            requestedModel === 'claude-opus-5-5-xhigh'
+        ) {
+            // xhigh: proxy-level tier. Upstream model is opus-5-5-high with an enlarged thinking budget.
+            requestedModel = 'claude-opus-5-5-high';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 48000 };
+        } else if (requestedModel === 'claude-sonnet-5-5-xhigh' || requestedModel === 'claude-sonnet-xhigh') {
+            requestedModel = 'claude-sonnet-5-5-high';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 48000 };
         } else if (requestedModel === 'claude-opus-5-5-low' || requestedModel === 'claude-opus-low') {
             requestedModel = 'claude-opus-5-5-low';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
@@ -1087,6 +1191,40 @@ app.post('/v1/messages', async (req, res) => {
         ) {
             requestedModel = 'gemini-4-argon-high';
             if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (
+            requestedModel === 'gemini-4-hydrogen-low' ||
+            requestedModel === 'hydrogen-low'
+        ) {
+            requestedModel = 'gemini-4-hydrogen-low';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
+        } else if (
+            requestedModel === 'gemini-4-hydrogen-medium' ||
+            requestedModel === 'gemini-4-hydrogen-med' ||
+            requestedModel === 'hydrogen-medium' ||
+            requestedModel === 'hydrogen-med'
+        ) {
+            requestedModel = 'gemini-4-hydrogen-medium';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
+        } else if (
+            requestedModel === 'gemini-4-hydrogen-xhigh' ||
+            requestedModel === 'hydrogen-xhigh'
+        ) {
+            requestedModel = 'gemini-4-hydrogen-xhigh';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (
+            requestedModel === 'gemini-4-hydrogen-high' ||
+            requestedModel === 'gemini-4-hydrogen' ||
+            requestedModel === 'hydrogen-high' ||
+            requestedModel === 'hydrogen'
+        ) {
+            requestedModel = 'gemini-4-hydrogen-high';
+            if (!req.body.thinking) req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
+        } else if (/^gemini-4-neon-(low|medium|high|xhigh)$/.test(requestedModel)) {
+            // Gemini 4 Neon: same default thinking budgets per tier as Hydrogen
+            if (!req.body.thinking) {
+                const budget = requestedModel.endsWith('-low') ? 4096 : (requestedModel.endsWith('-medium') ? 16000 : 32000);
+                req.body.thinking = { type: 'enabled', budget_tokens: budget };
+            }
         } else if (modelSplitter.isFlashCandidate(requestedModel)) {
             // Configure thinking budget based on requested thinking variant if not explicitly set
             if (!req.body.thinking) {
@@ -1094,30 +1232,36 @@ app.post('/v1/messages', async (req, res) => {
                     req.body.thinking = { type: 'enabled', budget_tokens: 4096 };
                 } else if (requestedModel.endsWith('-medium') || requestedModel.endsWith('-med') || requestedModel === 'flash-med' || requestedModel === 'flash-medium') {
                     req.body.thinking = { type: 'enabled', budget_tokens: 16000 };
-                } else if (requestedModel.endsWith('-high') || requestedModel === 'gemini-3.8-flash' || requestedModel === 'gemini-3.7-flash' || requestedModel === 'flash-high') {
+                } else if (requestedModel.endsWith('-high') || requestedModel.endsWith('-xhigh') || requestedModel === 'gemini-3.8-flash' || requestedModel === 'gemini-3.8-flash-tiered' || requestedModel === 'gemini-3.7-flash' || requestedModel === 'flash-high') {
                     req.body.thinking = { type: 'enabled', budget_tokens: 32000 };
                 }
             }
-            // Resolve canonical model with session attachment & weighted split (or reroute38To37 fallback)
+            // Redirect 3.8-flash / 3.7-flash requests to gemini-4-hydrogen
+            const prevModel = requestedModel;
             requestedModel = modelSplitter.resolveModel(requestedModel, sessionKey);
+            if (prevModel !== requestedModel) {
+                logger.info(`[Server] Redirecting ${prevModel} -> ${requestedModel}`);
+            }
         }
 
         let modelId = requestedModel;
 
-        // Validate model ID before processing
-        const { account: validationAccount } = accountManager.selectAccount();
-        if (validationAccount) {
-            const token = await accountManager.getTokenForAccount(validationAccount);
-            const projectId = validationAccount.subscription?.projectId || null;
-            const valid = await isValidModel(modelId, token, projectId);
+        // Validate model ID before processing (non-fatal if validation account token fails)
+        try {
+            const { account: validationAccount } = accountManager.selectAccount(modelId);
+            if (validationAccount) {
+                const token = await accountManager.getTokenForAccount(validationAccount);
+                const projectId = validationAccount.subscription?.projectId || null;
+                const valid = await isValidModel(modelId, token, projectId);
 
-            if (!valid) {
-                const fallback = isModelSplitEnabled() 
-                    ? modelSplitter.resolveModel('flash', sessionKey)
-                    : (isReroute38To37() ? 'gemini-3.7-flash-tiered' : 'gemini-3.8-flash-tiered');
-                logger.warn(`[Server] Model ${modelId} not in valid list, falling back to ${fallback}`);
-                modelId = fallback;
+                if (!valid) {
+                    const fallback = 'gemini-4-hydrogen-high';
+                    logger.warn(`[Server] Model ${modelId} not in valid list, falling back to ${fallback}`);
+                    modelId = fallback;
+                }
             }
+        } catch (valErr) {
+            logger.warn(`[Server] Model validation skipped due to token error: ${valErr.message}`);
         }
 
         // Optimistic Retry: If ALL accounts are rate-limited for this model, reset them to force a fresh check.
@@ -1166,12 +1310,48 @@ app.post('/v1/messages', async (req, res) => {
         const toolsCount = tools?.length || 0;
         logger.info(`[API] 📥 Request: model=${request.model} | msgs=${messages.length} | tools=${toolsCount} | prompt="${promptPreview}" | stream=${!!stream}`);
 
+        // Abort upstream work (Google retries, Strata prefill) if the client disconnects / gives up.
+        const clientAbort = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) clientAbort.abort(); });
+        attachClientSignal(request, clientAbort.signal);
+
         if (stream) {
             // Handle streaming response
             // Do NOT flush headers immediately. We need to wait for the first chunk
             // to ensure we don't send a 200 OK if the upstream fails immediately (e.g. 429/503).
             const streamStart = Date.now();
 
+            // Keepalive: Google buffers long "thinking" and sends nothing for minutes (observed TTFT 300s+), while
+            // Claude Code treats ~5 min of silence as a dead stream. After `afterMs` of silence we flush the SSE
+            // headers (HTTP 200) and then send Anthropic-style `ping` events every `everyMs`. Quick failures (<afterMs)
+            // still return a proper HTTP error status; later ones surface as an SSE `error` event (handled below).
+            const kaCfg = config.streamKeepAlive || {};
+            const kaEnabled = kaCfg.enabled !== false;
+            const kaAfterMs = kaCfg.afterMs ?? 20000;
+            const kaEveryMs = kaCfg.everyMs ?? 15000;
+            let lastWrite = Date.now();
+            const openSse = () => {
+                if (res.headersSent) return;
+                res.status(200);
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                res.setHeader('X-Accel-Buffering', 'no');
+                res.flushHeaders();
+            };
+            const sseWrite = (event) => {
+                lastWrite = Date.now();
+                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+                if (res.flush) res.flush();
+            };
+            const kaTimer = kaEnabled ? setInterval(() => {
+                if (res.writableEnded || res.destroyed) return;
+                const idle = Date.now() - lastWrite;
+                if (idle < (res.headersSent ? kaEveryMs : kaAfterMs)) return;
+                if (!res.headersSent) logger.info(`[API] ⏳ No upstream data for ${Math.round(idle / 1000)}s -> opening SSE + keepalive pings`);
+                openSse();
+                sseWrite({ type: 'ping' });
+            }, 2000) : null;
             try {
                 // Initialize the generator
                 let generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
@@ -1183,9 +1363,9 @@ app.post('/v1/messages', async (req, res) => {
                 try {
                     firstResult = await generator.next();
                 } catch (googleError) {
-                    // Google path exhausted before any byte was sent -> GitHub Copilot fallback
-                    if (shouldFallbackToCopilot(googleError) && canFallbackToCopilot(request)) {
-                        generator = streamCopilotFallback(request, googleError);
+                    // Google path exhausted before any byte was sent -> last-resort chain (Copilot -> Strata)
+                    if (hasLastResortFallback(request, googleError)) {
+                        generator = streamLastResortChain(request, googleError, sessionKey);
                         firstResult = await generator.next();
                     } else {
                         throw googleError;
@@ -1193,26 +1373,19 @@ app.post('/v1/messages', async (req, res) => {
                 }
 
                 // If we get here, the stream started successfully.
-                res.status(200);
-                res.setHeader('Content-Type', 'text/event-stream');
-                res.setHeader('Cache-Control', 'no-cache');
-                res.setHeader('Connection', 'keep-alive');
-                res.setHeader('X-Accel-Buffering', 'no');
-                res.flushHeaders();
+                openSse();
 
                 let eventCount = 0;
                 // If the generator isn't done, send the first chunk
                 if (!firstResult.done) {
                     eventCount++;
-                    res.write(`event: ${firstResult.value.type}\ndata: ${JSON.stringify(firstResult.value)}\n\n`);
-                    if (res.flush) res.flush();
+                    sseWrite(firstResult.value);
                 }
 
                 // Continue with the rest of the stream
                 for await (const event of generator) {
                     eventCount++;
-                    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-                    if (res.flush) res.flush();
+                    sseWrite(event);
                 }
                 
                 const totalStreamDuration = Date.now() - streamStart;
@@ -1241,6 +1414,8 @@ app.post('/v1/messages', async (req, res) => {
                     })}\n\n`);
                     res.end();
                 }
+            } finally {
+                if (kaTimer) clearInterval(kaTimer);
             }
             return;
         } else {
@@ -1249,8 +1424,8 @@ app.post('/v1/messages', async (req, res) => {
             try {
                 response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
             } catch (googleError) {
-                if (shouldFallbackToCopilot(googleError) && canFallbackToCopilot(request)) {
-                    response = await sendCopilotFallback(request, googleError);
+                if (hasLastResortFallback(request, googleError)) {
+                    response = await sendLastResortChain(request, googleError, sessionKey);
                 } else {
                     throw googleError;
                 }
@@ -1287,6 +1462,7 @@ app.post('/v1/messages', async (req, res) => {
             })}\n\n`);
             res.end();
         } else {
+            if (error?.retryInMs) res.setHeader('retry-after', String(Math.max(1, Math.ceil(error.retryInMs / 1000))));
             res.status(statusCode).json({
                 type: 'error',
                 error: {

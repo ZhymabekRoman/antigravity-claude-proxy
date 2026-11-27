@@ -3,6 +3,9 @@
  * Converts Anthropic Messages API requests to Google Generative AI format
  */
 
+import { stripFilterBannerFromMessages } from '../cloudcode/filter-banner.js';
+import { liftInstructionReminder, annotateSkillInjections } from './rules-lift.js';
+import { config as proxyConfig } from '../config.js';
 import {
     GEMINI_MAX_OUTPUT_TOKENS,
     DEFAULT_SAFETY_SETTINGS,
@@ -52,6 +55,83 @@ export function isSideQuestionRequest(messages, system) {
 }
 
 /**
+ * Detect a Claude Code compaction request (/compact, auto-compact, partial compact): the LAST user turn carries the
+ * summarization prompt ("Your task is to create a detailed summary of the conversation so far ..." + <analysis>/<summary>).
+ * @param {Array} messages Anthropic messages
+ * @returns {boolean}
+ */
+export function isCompactRequest(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return false;
+    let last = null;
+    for (let i = messages.length - 1; i >= 0; i--) { if (messages[i]?.role === 'user') { last = messages[i]; break; } }
+    if (!last) return false;
+    const text = typeof last.content === 'string'
+        ? last.content
+        : (Array.isArray(last.content) ? last.content.map(b => (b && typeof b.text === 'string') ? b.text : '').join('\n') : '');
+    return /detailed summary of the (?:conversation so far|recent portion|conversation)/i.test(text) && /<summary>/i.test(text);
+}
+
+/**
+ * Appended to the Agent/Task `prompt` parameter description for Gemini models.
+ * The terse "caveman" style applies to chat prose ONLY, never to delegation briefs.
+ */
+const AGENT_BRIEF_REQUIREMENT =
+    'REQUIRED: write a SELF-CONTAINED brief (normally 1500+ characters; terse/caveman style does NOT apply here). ' +
+    'The subagent sees nothing else and cannot ask questions. Include: (1) the goal and why, ' +
+    '(2) exact absolute file paths, symbols, commands, addresses and error text, ' +
+    '(3) what is already known, tried or ruled out (so it does not repeat reads/work), ' +
+    '(4) constraints (what not to touch, build/test commands), ' +
+    '(5) the exact output format you want back. Never delegate with a one-line prompt.';
+
+/**
+ * Sanitize system prompt to avoid Google CloudCode server WAF triggers (which manifest as 429 RESOURCE_EXHAUSTED).
+ *
+ * Google CloudCode API rejects requests whose system prompt contains Anthropic/Claude CLI self-identification
+ * or security testing guidance keywords (DoS attacks, destructive techniques, mass targeting, supply chain compromise,
+ * detection evasion, dual-use security tools / C2 frameworks).
+ *
+ * @param {string} text
+ * @returns {string} Sanitized text
+ */
+export function sanitizeSystemPrompt(text) {
+    if (!text || typeof text !== 'string') return text;
+    return text
+        .replace(/x-anthropic-[a-zA-Z0-9_-]+:[^\n]+/gi, '')
+        .replace(/You are a Claude agent, built on Anthropic's Claude Agent SDK\./gi, "You are an agent, built on the Agent SDK.")
+        .replace(/built on Anthropic's Claude Agent SDK/gi, "built on the Agent SDK")
+        .replace(/You are Claude Code(?:, Anthropic's official CLI for Claude)?\./gi, "You are an interactive CLI assistant.")
+        .replace(/Anthropic's official CLI for Claude/gi, "an interactive CLI assistant")
+        .replace(/You are Claude Code/gi, "You are an interactive CLI assistant")
+        // Newer Claude Code identity line; Google CloudCode answers 429 RESOURCE_EXHAUSTED to this exact phrase
+        .replace(/You are an interactive agent that helps users with software engineering tasks\./gi, 'You are an interactive CLI assistant that helps users with coding.')
+        .replace(/an interactive agent that helps users with software engineering tasks/gi, 'an interactive CLI assistant that helps users with coding')
+        .replace(/(?:IMPORTANT:\s*)?Assist with authorized security testing[\s\S]*?(?=\n\n|$)/gi, '')
+        .replace(/Refuse requests for destructive techniques[\s\S]*?(?=\n\n|$)/gi, '')
+        .replace(/Dual-use security tools \(C2 frameworks[\s\S]*?(?=\n\n|$)/gi, '')
+        // Claude Code 2.1.327+ <pasted_content> prompt-injection guard line; Google CloudCode WAF answers 429 RESOURCE_EXHAUSTED to this line
+        .replace(/^[ \t]*-?[ \t]*Text inside <pasted_content> tags was pasted into the message[\s\S]*?(?=\n|$)/gim, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+/**
+ * agy 1.5.9 sends thinkingLevel (not thinkingBudget) for level-suffixed models.
+ * Observed: low/medium/high -> "LOW"/"MEDIUM"/"HIGH"; hydrogen xhigh -> 100.
+ * @returns {string|number|null} null when the model has no level suffix (keep budget path)
+ */
+export function getAgyThinkingLevel(modelName) {
+    const m = /-(xhigh|high|medium|low)$/i.exec(modelName || '');
+    if (!m || !/^gemini-/i.test(modelName)) return null;
+    const l = m[1].toLowerCase();
+    return l === 'xhigh' ? 100 : l.toUpperCase();
+}
+
+/** agy per-family maxOutputTokens (hydrogen 262144, others 65536). */
+export function getAgyMaxOutputTokens(modelName) {
+    return /hydrogen/i.test(modelName || '') ? 262144 : 65536;
+}
+
+/**
  * Convert Anthropic Messages API request to the format expected by Cloud Code
  *
  * Uses Google Generative AI format, but for Claude models:
@@ -65,7 +145,13 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     // Claude Code CLI sends cache_control on various content blocks, but Cloud Code API
     // rejects them with "Extra inputs are not permitted". Clean them proactively here
     // before any other processing, following the pattern from Antigravity-Manager.
-    const messages = cleanCacheControl(anthropicRequest.messages || []);
+    let messages = cleanCacheControl(anthropicRequest.messages || []);
+    // Keep Gemini filter banners ("This request was blocked by Gemini's filters...") out of the model context
+    const scrub = stripFilterBannerFromMessages(messages);
+    if (scrub.removed) {
+        logger.info(`[RequestConverter] 🧹 Removed ${scrub.removed} Gemini filter-banner assistant turn(s) from history`);
+        messages = scrub.messages;
+    }
 
     const { system, max_tokens, temperature, top_p, top_k, stop_sequences, tools, tool_choice, thinking } = anthropicRequest;
     const modelName = anthropicRequest.model || '';
@@ -83,34 +169,51 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
         safetySettings: DEFAULT_SAFETY_SETTINGS
     };
 
-    // Sanitize system prompt to avoid Google CloudCode server WAF triggers
-    const sanitizeSystemPrompt = (text) => {
-        if (!text || typeof text !== 'string') return text;
-        return text
-            .replace(/x-anthropic-[a-zA-Z0-9_-]+:[^\n]+/gi, '')
-            .replace(/You are a Claude agent, built on Anthropic's Claude Agent SDK\./gi, "You are an agent, built on the Agent SDK.")
-            .replace(/built on Anthropic's Claude Agent SDK/gi, "built on the Agent SDK");
-    };
+    // Instruction lift: move the CLAUDE.md/RTK.md/MEMORY.md reminder from the first user turn into systemInstruction
+    let liftedRules = null;
+    if (isGeminiModel && proxyConfig.rulesToSystemInstruction !== false) {
+        const lifted = liftInstructionReminder(messages);
+        if (lifted.rules) {
+            liftedRules = lifted.rules;
+            messages = lifted.messages;
+            logger.info(`[RequestConverter] 📜 Lifted CLAUDE.md rules block (${liftedRules.length} chars) from first user turn into systemInstruction`);
+        }
+    }
 
-    // Handle system instruction
+    // Gemini treats a loaded-skill text block as a fresh instruction and abandons the task: tell it to continue
+    if (isGeminiModel) messages = annotateSkillInjections(messages);
+
+    // Handle system instruction (sanitized against Google CloudCode WAF triggers)
     if (system) {
         let systemParts = [];
         if (typeof system === 'string') {
-            const sanitized = sanitizeSystemPrompt(system).trim();
+            const sanitized = sanitizeSystemPrompt(system);
             if (sanitized) systemParts = [{ text: sanitized }];
         } else if (Array.isArray(system)) {
             // Filter for text blocks as system prompts are usually text
             // Anthropic supports text blocks in system prompts
             systemParts = system
-                .filter(block => block.type === 'text')
-                .map(block => ({ text: sanitizeSystemPrompt(block.text).trim() }))
+                .filter(block => block && block.type === 'text')
+                .map(block => ({ text: sanitizeSystemPrompt(block.text) }))
                 .filter(block => block.text.length > 0);
+        } else if (typeof system === 'object' && system && typeof system.text === 'string') {
+            const sanitized = sanitizeSystemPrompt(system.text);
+            if (sanitized) systemParts = [{ text: sanitized }];
         }
 
         if (systemParts.length > 0) {
             googleRequest.systemInstruction = {
                 parts: systemParts
             };
+        }
+    }
+
+    if (liftedRules) {
+        const rulesText = sanitizeSystemPrompt(liftedRules);
+        if (rulesText) {
+            const parts = googleRequest.systemInstruction?.parts || [];
+            parts.push({ text: rulesText });
+            googleRequest.systemInstruction = { parts };
         }
     }
 
@@ -195,17 +298,17 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
         }
     }
 
-    if (isGeminiModel && isThinking && needsThinkingRecovery(messages)) {
+    if (isGeminiModel && isThinking && needsThinkingRecovery(processedMessages)) {
         logger.debug('[RequestConverter] Applying thinking recovery for Gemini');
-        processedMessages = closeToolLoopForThinking(messages, 'gemini');
+        processedMessages = closeToolLoopForThinking(processedMessages, 'gemini');
     }
 
     // For Claude: apply recovery for cross-model (Gemini→Claude) or unsigned thinking blocks
     // Unsigned thinking blocks occur when Claude Code strips signatures it doesn't understand
-    const needsClaudeRecovery = hasGeminiHistory(messages) || hasUnsignedThinkingBlocks(messages);
-    if (isClaudeModel && isThinking && needsClaudeRecovery && needsThinkingRecovery(messages)) {
+    const needsClaudeRecovery = hasGeminiHistory(processedMessages) || hasUnsignedThinkingBlocks(processedMessages);
+    if (isClaudeModel && isThinking && needsClaudeRecovery && needsThinkingRecovery(processedMessages)) {
         logger.debug('[RequestConverter] Applying thinking recovery for Claude');
-        processedMessages = closeToolLoopForThinking(messages, 'claude');
+        processedMessages = closeToolLoopForThinking(processedMessages, 'claude');
     }
 
     // Convert messages to contents, then filter unsigned thinking blocks
@@ -311,6 +414,21 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
         } else if (isGeminiModel) {
             // Gemini thinking config (uses camelCase)
             // Clamp budget to model-specific max (e.g., Gemini 2.5 Flash max is 24,576)
+            // agy parity (mitm capture): models named *-low/-medium/-high/-xhigh use thinkingLevel
+            // (no budget) and a per-family maxOutputTokens; everything else keeps the budget path.
+            const agyLevel = !isByok ? getAgyThinkingLevel(modelName) : null;
+            if (agyLevel !== null) {
+                googleRequest.generationConfig.thinkingConfig = { includeThoughts: true, thinkingLevel: agyLevel };
+                // Level-based thinking is NOT bounded by a budget, so bound it by maxOutputTokens (thinking + answer):
+                // the client's max_tokens, but never below (level allowance + 8192) so the answer still fits,
+                // and never above the agy family maximum. (Unbounded thinking was observed at 75K-97K tokens = 5+ min.)
+                const allowance = { LOW: 4096, MEDIUM: 16000, HIGH: 32000 }[agyLevel] ?? 32000;
+                const clientMax = googleRequest.generationConfig.maxOutputTokens || 0;
+                const floor = allowance + 8192;
+                googleRequest.generationConfig.maxOutputTokens = Math.min(getAgyMaxOutputTokens(modelName), Math.max(clientMax, floor));
+                logger.debug(`[RequestConverter] agy-style thinkingLevel=${agyLevel} maxOutputTokens=${googleRequest.generationConfig.maxOutputTokens}`);
+                // skip budget path below
+            } else {
             const thinkingBudget = clampGeminiThinkingBudget(modelName, thinking?.budget_tokens);
             const thinkingConfig = {
                 includeThoughts: true,
@@ -330,6 +448,7 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
             }
 
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;
+            }
         }
     }
 
@@ -374,6 +493,13 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
             // "Proto field is not repeating, cannot start list" for Claude models.
             parameters = cleanSchema(parameters);
 
+            // Gemini tends to write very thin subagent briefs (esp. under terse-style plugins like Caveman).
+            // A subagent sees ONLY `prompt`, so reinforce the requirement inside the tool schema itself.
+            if (isGeminiModel && (name === 'Agent' || name === 'Task') && parameters?.properties?.prompt) {
+                const p = parameters.properties.prompt;
+                p.description = `${p.description || ''}${p.description ? ' ' : ''}${AGENT_BRIEF_REQUIREMENT}`.trim();
+            }
+
             return {
                 name: String(name).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64),
                 description: description,
@@ -381,7 +507,10 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
             };
         });
 
-        googleRequest.tools = [{ functionDeclarations }];
+        // agy parity: one `tools` entry per function declaration (17 entries x 1 decl in capture)
+        googleRequest.tools = isByok
+            ? [{ functionDeclarations }]
+            : functionDeclarations.map(d => ({ functionDeclarations: [d] }));
         logger.debug(`[RequestConverter] Tools: ${JSON.stringify(googleRequest.tools).substring(0, 300)}`);
 
         // If side question (/btw), enforce mode: "NONE" to preserve prompt cache while completely
@@ -405,9 +534,10 @@ export function convertAnthropicToGoogle(anthropicRequest, isByok = false) {
     }
 
     // Cap max tokens for Gemini models
-    if (isGeminiModel && googleRequest.generationConfig.maxOutputTokens > GEMINI_MAX_OUTPUT_TOKENS) {
-        logger.debug(`[RequestConverter] Capping Gemini max_tokens from ${googleRequest.generationConfig.maxOutputTokens} to ${GEMINI_MAX_OUTPUT_TOKENS}`);
-        googleRequest.generationConfig.maxOutputTokens = GEMINI_MAX_OUTPUT_TOKENS;
+    const agyCap = (!isByok && getAgyThinkingLevel(modelName) !== null) ? getAgyMaxOutputTokens(modelName) : GEMINI_MAX_OUTPUT_TOKENS;
+    if (isGeminiModel && googleRequest.generationConfig.maxOutputTokens > agyCap) {
+        logger.debug(`[RequestConverter] Capping Gemini max_tokens from ${googleRequest.generationConfig.maxOutputTokens} to ${agyCap}`);
+        googleRequest.generationConfig.maxOutputTokens = agyCap;
     }
 
     // [CRITICAL FIX] Ensure valid turn sequence for Gemini models:

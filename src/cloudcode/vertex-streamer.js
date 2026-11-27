@@ -100,11 +100,12 @@ const VERTEX_LOCATION = 'global';
  * @returns {string} Vertex-compatible model ID
  */
 export function mapToVertexModel(model) {
-    if (!model) return 'gemini-3.7-flash';
+    if (!model) return 'gemini-4-hydrogen-high';
     const m = model.toLowerCase();
 
-    // Strip tiered/high/medium/low suffixes
-    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return (!isModelSplitEnabled() && isReroute38To37()) ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
+    // Redirect 3.8-flash to gemini-4-hydrogen-high
+    if (m.includes('hydrogen')) return model;
+    if (m.includes('3.8-flash') || m.includes('3-8-flash')) return 'gemini-4-hydrogen-high';
     if (m.includes('3.7-flash') || m.includes('3-7-flash')) return 'gemini-3.7-flash';
     if (m.includes('3.6-flash') || m.includes('3-6-flash')) return 'gemini-3.6-flash';
     if (m.includes('3.5-flash') || m.includes('3-5-flash')) return 'gemini-3.5-flash';

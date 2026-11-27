@@ -10,6 +10,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { logger } from '../utils/logger.js';
 import { SESSIONS_PERSISTENCE_PATH } from '../constants.js';
+import { config } from '../config.js';
+import { isBreakerOpen } from './exhaustion-breaker.js';
 
 // Runtime storage for session IDs (per account)
 const runtimeSessionStore = new Map();
@@ -102,7 +104,9 @@ export class SessionRouter {
                                 upstreamSessionId: item.upstreamSessionId || null,
                                 requestCount: item.requestCount || 1,
                                 isSubagent: !!item.isSubagent,
-                                tokens: item.tokens || { input: 0, output: 0, cached: 0 }
+                                tokens: item.tokens || { input: 0, output: 0, cached: 0 },
+                                pin: item.pin || null,
+                                servedBy: item.servedBy || null
                             });
                             loaded++;
                         }
@@ -155,7 +159,9 @@ export class SessionRouter {
                     upstreamSessionId: entry.upstreamSessionId || null,
                     requestCount: entry.requestCount,
                     isSubagent: entry.isSubagent,
-                    tokens: entry.tokens
+                    tokens: entry.tokens,
+                    pin: entry.pin || null,
+                    servedBy: entry.servedBy || null
                 });
             }
 
@@ -190,11 +196,13 @@ export class SessionRouter {
      * @param {string} sessionKey - Fingerprint for the session
      * @param {string} modelId - Model ID to attach
      */
-    pinModel(sessionKey, modelId) {
+    pinModel(sessionKey, modelId, reason = 'filter') {
         if (!sessionKey || sessionKey === 'anon' || !modelId) return;
+        const pin = { model: modelId, at: Date.now(), reason };
         const existing = this.#sessions.get(sessionKey);
         if (existing) {
             existing.modelId = modelId;
+            existing.pin = pin;
             existing.lastUsed = Date.now();
         } else {
             this.#sessions.set(sessionKey, {
@@ -202,6 +210,7 @@ export class SessionRouter {
                 assignedAt: Date.now(),
                 lastUsed: Date.now(),
                 modelId,
+                pin,
                 upstreamSessionId: null,
                 requestCount: 0,
                 isSubagent: false,
@@ -209,6 +218,99 @@ export class SessionRouter {
             });
         }
         this.#scheduleSave();
+    }
+
+    /**
+     * Active filter pin for a session: the pinned model, or null.
+     * - Only a real pin record counts (set by pinModel on a safety-filter event). A session's sticky
+     *   `modelId` is NOT a pin (legacy sessions therefore come back unpinned).
+     * - Pins expire config.filterPin.ttlMs (default 30 min) after the last filter event.
+     * - A pin is ignored while its model's exhaustion breaker is open, so a session can never be trapped
+     *   on a dead model (one-way escape: the request keeps the model the client asked for).
+     */
+    getActivePin(sessionKey) {
+        if (!sessionKey || sessionKey === 'anon') return null;
+        const entry = this.#sessions.get(sessionKey);
+        const pin = entry?.pin;
+        if (!pin?.model) return null;
+        const ttlMs = config.filterPin?.ttlMs ?? 30 * 60_000;
+        if (Date.now() - pin.at > ttlMs) {
+            entry.pin = null;
+            this.#scheduleSave();
+            return null;
+        }
+        if (isBreakerOpen(pin.model)) {
+            logger.warn(`[Pin] ${pin.model} is unhealthy (breaker open) -> ignoring pin for ${sessionKey}`);
+            return null;
+        }
+        return pin.model;
+    }
+
+    /**
+     * Give a session a brand-new upstream sessionId (Google-side conversation identity).
+     * Costs one cold prompt cache. Used when a session keeps failing on every model/account while other
+     * sessions work on the same accounts (identity-bound failure), and by the unpin actions.
+     */
+    rotateUpstreamSession(sessionKey, reason = 'manual') {
+        if (!sessionKey || sessionKey === 'anon') return false;
+        const entry = this.#sessions.get(sessionKey);
+        if (!entry) return false;
+        const old = entry.upstreamSessionId;
+        entry.upstreamSessionId = null;               // re-created lazily by getOrCreateUpstreamSessionId()
+        entry.failStreak = null;
+        entry.lastRotatedAt = Date.now();
+        this.#scheduleSave();
+        logger.warn(`[SessionRotate] ♻️ ${sessionKey}: new upstream sessionId (${reason}); old=${String(old).slice(0, 8)}…`);
+        return true;
+    }
+
+    /**
+     * Record a request-level exhaustion for a session (called once per model hop that failed on >=3 accounts).
+     * When >=2 DIFFERENT models failed for the same session within 5 min, the failure is tied to the session,
+     * not to a model -> rotate its upstream sessionId (at most once per 10 min).
+     */
+    noteSessionExhaustion(sessionKey, model, triedCount) {
+        if (!sessionKey || sessionKey === 'anon' || triedCount < 3) return;
+        const entry = this.#sessions.get(sessionKey);
+        if (!entry) return;
+        const now = Date.now();
+        const st = entry.failStreak && now - entry.failStreak.at < 5 * 60_000 ? entry.failStreak : { at: now, models: [] };
+        if (!st.models.includes(model)) st.models.push(model);
+        st.at = now;
+        entry.failStreak = st;
+        if (st.models.length >= 2 && now - (entry.lastRotatedAt || 0) > 10 * 60_000) {
+            this.rotateUpstreamSession(sessionKey, `failed on ${st.models.join(' + ')} across accounts`);
+        }
+    }
+
+    noteSessionSuccess(sessionKey) {
+        const entry = sessionKey && this.#sessions.get(sessionKey);
+        if (entry?.failStreak) entry.failStreak = null;
+    }
+
+    /**
+     * Unpin sessions: clears the filter pin, the account affinity and the last-resort marker so the
+     * session is routed fresh on its next request (one-time prompt-cache miss).
+     * @param {{sessionKey?: string, all?: boolean, strata?: boolean}} opts
+     * @returns {number} Number of sessions affected
+     */
+    unpinSessions({ sessionKey = null, all = false, strata = false } = {}) {
+        let n = 0;
+        for (const [key, entry] of this.#sessions) {
+            const onStrata = entry.servedBy?.backend === 'strata' || /strata|swift/i.test(entry.modelId || '');
+            const match = all || (sessionKey && key === sessionKey) || (strata && onStrata);
+            if (!match) continue;
+            entry.pin = null;
+            entry.accountEmail = null;
+            entry.servedBy = null;
+            entry.upstreamSessionId = null;   // fresh upstream identity too
+            entry.failStreak = null;
+            if (/3\.8-flash/i.test(entry.modelId || '')) entry.modelId = null;   // drop the legacy sticky 3.8 model too
+            n++;
+        }
+        if (n > 0) this.#scheduleSave();
+        logger.info(`[SessionRouter] 🔓 Unpinned ${n} session(s) (${all ? 'all' : strata ? 'strata' : sessionKey})`);
+        return n;
     }
 
     /**
@@ -233,7 +335,7 @@ export class SessionRouter {
         if (entry?.upstreamSessionId) {
             return entry.upstreamSessionId;
         }
-        const newUpstreamId = crypto.randomUUID() + Date.now().toString();
+        const newUpstreamId = randomAgySessionId();
         if (entry) {
             entry.upstreamSessionId = newUpstreamId;
         } else {
@@ -287,6 +389,37 @@ export class SessionRouter {
         }
 
         return null;
+    }
+
+    /**
+     * Number of recently active sessions currently bound to an account.
+     * Used by the account strategy to spread NEW sessions across accounts instead of piling
+     * every session on the single best-scoring account.
+     *
+     * @param {string} email - Account email
+     * @param {{windowMs?: number, excludeKey?: string|null}} [opts]
+     * @returns {number}
+     */
+    /**
+     * Record which last-resort backend (copilot/strata) answered a session that has no Google account.
+     */
+    recordServedBy(sessionKey, backend) {
+        if (!sessionKey || sessionKey === 'anon') return;
+        const entry = this.#sessions.get(sessionKey);
+        if (!entry) return;
+        entry.servedBy = { backend, at: Date.now() };
+        this.#scheduleSave();
+    }
+
+    getActiveSessionCount(email, { windowMs = 300000, excludeKey = null } = {}) {
+        if (!email) return 0;
+        const now = Date.now();
+        let n = 0;
+        for (const [key, entry] of this.#sessions) {
+            if (key === excludeKey) continue;
+            if (entry.accountEmail === email && now - (entry.lastUsed || 0) <= windowMs) n++;
+        }
+        return n;
     }
 
     /**
@@ -382,7 +515,7 @@ export class SessionRouter {
             const isClaude = Boolean(entry.modelId && entry.modelId.toLowerCase().includes('claude'));
             const isVertex = Boolean(gcpProject && !isClaude);
 
-            const effectiveQuotaModel = (isClaude && !acc?.quota?.models?.[entry.modelId]) ? 'gemini-3.7-flash-tiered' : entry.modelId;
+            const effectiveQuotaModel = (isClaude && !acc?.quota?.models?.[entry.modelId]) ? 'gemini-4-hydrogen-high' : entry.modelId;
             const modelQuota = acc?.quota?.models?.[effectiveQuotaModel] || acc?.models?.[effectiveQuotaModel];
             const remainingFraction = isVertex ? 1.0 : (modelQuota?.remainingFraction ?? null);
             const remainingPercent = isVertex ? 100 : (remainingFraction !== null ? Math.round(remainingFraction * 100) : null);
@@ -412,7 +545,10 @@ export class SessionRouter {
                 isByok,
                 hasByokKey: !!rawKey,
                 byokKeyPreview,
-                accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || (entry.accountEmail ? 'ok' : 'unassigned')),
+                servedBy: entry.servedBy || null,
+                pinnedModel: entry.pin?.model && (Date.now() - entry.pin.at <= (config.filterPin?.ttlMs ?? 30 * 60_000)) ? entry.pin.model : null,
+                pinExpiresInMs: entry.pin?.model ? Math.max(0, (config.filterPin?.ttlMs ?? 30 * 60_000) - (Date.now() - entry.pin.at)) : null,
+                accountStatus: isRateLimited ? 'rate_limited' : (acc?.status || (entry.accountEmail ? 'ok' : (entry.servedBy && now - entry.servedBy.at < 300000 ? 'fallback' : 'unassigned'))),
                 remainingFraction,
                 remainingPercent,
                 resetTime: isVertex ? null : (modelQuota?.resetTime || null),
@@ -463,7 +599,7 @@ export function deriveSessionId(anthropicRequest, accountEmail) {
     // for that conversation. This ensures isolated, continuous Google TPU prompt cache affinity.
     const sessionKey = extractSessionKey(anthropicRequest);
     if (sessionKey && sessionKey !== 'anon') {
-        return sessionRouter.getOrCreateUpstreamSessionId(sessionKey, accountEmail);
+        return toAgySessionId(sessionRouter.getOrCreateUpstreamSessionId(sessionKey, accountEmail));
     }
 
     if (!accountEmail) {
@@ -471,7 +607,7 @@ export function deriveSessionId(anthropicRequest, accountEmail) {
     }
 
     if (runtimeSessionStore.has(accountEmail)) {
-        return runtimeSessionStore.get(accountEmail);
+        return toAgySessionId(runtimeSessionStore.get(accountEmail));
     }
 
     const newSessionId = generateBinaryStyleId();
@@ -479,11 +615,29 @@ export function deriveSessionId(anthropicRequest, accountEmail) {
     return newSessionId;
 }
 
+
+/**
+ * agy sends sessionId as a signed 64-bit integer string (e.g. "-3750763034362895579"), not uuid+timestamp.
+ */
+function randomAgySessionId() {
+    return crypto.randomBytes(8).readBigInt64BE().toString();
+}
+
+/**
+ * Map a legacy (uuid+timestamp) upstream session id to a stable signed-64 decimal string so persisted
+ * sessions keep a constant id (TPU prompt-cache affinity) while matching agy's format.
+ */
+export function toAgySessionId(id) {
+    if (!id) return id;
+    if (/^-?\d{1,19}$/.test(String(id))) return String(id);
+    return crypto.createHash('sha256').update(String(id)).digest().readBigInt64BE(0).toString();
+}
+
 /**
  * Generate a Session ID using the binary's exact logic.
  */
 function generateBinaryStyleId() {
-    return crypto.randomUUID() + Date.now().toString();
+    return randomAgySessionId();
 }
 
 /**

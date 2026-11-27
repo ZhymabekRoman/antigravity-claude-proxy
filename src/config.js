@@ -55,6 +55,11 @@ const DEFAULT_CONFIG = {
     switchAccountDelayMs: 5000,    // Delay before switching accounts on rate limit
     capacityBackoffTiersMs: [5000, 10000, 20000, 30000, 60000], // Progressive backoff tiers for capacity exhaustion
     tokenUsageScale: 1.0, // Scale factor for reported token usage (1.0 = 100% exact upstream Google tokens)
+    // Heartbeat for long silent upstream thinking (see server.js): open SSE after afterMs idle, ping every everyMs
+    streamKeepAlive: { enabled: true, afterMs: 20000, everyMs: 15000 },
+    // Route every Claude Code compaction request (/compact, auto-compact) to one model, whatever the session model is
+    compactRouting: { enabled: true, model: 'gemini-4-hydrogen-medium' },
+    rulesToSystemInstruction: true, // lift CLAUDE.md reminder from the first user turn into systemInstruction (Gemini)
     reroute38To37: false, // Redirect Gemini 3.8 Flash requests to Gemini 3.7 Flash
     vertexFlexMode: true, // Send X-Vertex-AI-LLM-Request-Type: shared & X-Vertex-AI-LLM-Shared-Request-Type: flex on Vertex AI
     modelSplit: {
@@ -188,6 +193,11 @@ function loadConfig() {
         if (process.env.MODEL_SPLIT_38_WEIGHT !== undefined) {
             config.modelSplit = config.modelSplit || {};
             config.modelSplit.gemini38Weight = Number(process.env.MODEL_SPLIT_38_WEIGHT) || 40;
+        }
+        // STRATA_VIA_GEMINI=<gemini-model>|true|false : serve strata*/swift* requests via the Gemini path
+        if (process.env.STRATA_VIA_GEMINI !== undefined && config.upstreams?.strata) {
+            const v = process.env.STRATA_VIA_GEMINI;
+            config.upstreams.strata.viaGemini = v === 'true' ? true : (v === 'false' || v === '' ? false : v);
         }
         if (process.env.COPILOT_FALLBACK !== undefined) {
             config.copilotFallback = config.copilotFallback || {};

@@ -14,6 +14,47 @@ import {
 import { convertAnthropicToGoogle } from '../format/index.js';
 import { deriveSessionId } from './session-manager.js';
 
+// ── agy identity parity (mitm capture of agy 1.5.9) ─────────────────────────────────────────────
+// requestId = agent/<cascadeId>/<cascadeStartMs>/<trajectoryId>/<n>; labels carry the same ids.
+const AGY_MODEL_ENUM = {
+    'gemini-3.8-flash-medium': 'MODEL_PLACEHOLDER_M319',
+    'gemini-3.8-flash-low': 'MODEL_PLACEHOLDER_M320',
+    'gemini-4-hydrogen-high': 'MODEL_PLACEHOLDER_M525',
+    'gemini-4-hydrogen-xhigh': 'MODEL_PLACEHOLDER_M528',
+    'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
+    'claude-sonnet-5-5-medium': 'MODEL_PLACEHOLDER_M404'
+};
+const agyIdentities = new Map();   // upstream sessionId -> { cascadeId, startMs, trajectoryId, seq }
+const AGY_IDENTITY_MAX = 2000;
+
+function nextAgyIdentity(key) {
+    let id = agyIdentities.get(key);
+    if (!id) {
+        if (agyIdentities.size >= AGY_IDENTITY_MAX) agyIdentities.delete(agyIdentities.keys().next().value);
+        id = { cascadeId: crypto.randomUUID(), startMs: Date.now(), trajectoryId: crypto.randomUUID(), seq: 0 };
+        agyIdentities.set(key, id);
+    }
+    id.seq += 1;
+    return id;
+}
+
+function buildAgyIdentity(model, sessionId) {
+    const id = nextAgyIdentity(String(sessionId));
+    const isClaude = getModelFamily(model) === 'claude';
+    const labels = {
+        cascade_id: id.cascadeId,
+        last_step_index: '0',
+        ...(AGY_MODEL_ENUM[model] ? { model_enum: AGY_MODEL_ENUM[model] } : {}),
+        request_id: `${id.trajectoryId}-${id.seq - 1}`,
+        root_cascade_id: id.cascadeId,
+        trajectory_id: id.trajectoryId,
+        used_claude: String(isClaude),
+        used_claude_conservative: String(isClaude),
+        used_non_gemini_model: String(isClaude)
+    };
+    return { labels, requestId: `agent/${id.cascadeId}/${id.startMs}/${id.trajectoryId}/${id.seq}` };
+}
+
 /**
  * Build the wrapped request body for Cloud Code API
  *
@@ -46,13 +87,16 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
         }
     }
 
+    const agy = buildAgyIdentity(model, googleRequest.sessionId);
+    googleRequest.labels = agy.labels;
+
     const payload = {
         project: projectId,
         model: model,
         request: googleRequest,
         userAgent: 'antigravity',
         requestType: 'agent',  // CLIProxyAPI v6.6.89 compatibility
-        requestId: 'agent-' + crypto.randomUUID()
+        requestId: agy.requestId
     };
 
     // Inject systemInstruction with role: "user" at the top level (CLIProxyAPI v6.6.89 behavior)
@@ -87,10 +131,11 @@ export function buildHeaders(token, model, accept = 'application/json', sessionI
         headers['x-account-key'] = accountEmail;
     }
 
-    // Add session ID header if provided (matches Antigravity binary behavior)
-    if (sessionId) {
+    // agy sends no X-Machine-Session-Id (mitm capture); keep only for legacy-header rollback
+    if (sessionId && process.env.ANTIGRAVITY_LEGACY_HEADERS === '1') {
         headers['X-Machine-Session-Id'] = sessionId;
     }
+    headers['Accept-Encoding'] = 'gzip';
 
     const modelFamily = getModelFamily(model);
 
@@ -99,7 +144,8 @@ export function buildHeaders(token, model, accept = 'application/json', sessionI
         headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
     }
 
-    if (accept !== 'application/json') {
+    // agy sends no Accept header; legacy rollback keeps it
+    if (accept !== 'application/json' && process.env.ANTIGRAVITY_LEGACY_HEADERS === '1') {
         headers['Accept'] = accept;
     }
 

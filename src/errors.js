@@ -150,6 +150,82 @@ export class EmptyResponseError extends AntigravityError {
 }
 
 /**
+ * Content filter / safety block error - thrown when Google blocks a request/response
+ * due to SAFETY, PROHIBITED_CONTENT, RECITATION, BLOCKLIST, SPII, or IMAGE_SAFETY.
+ * Triggers immediate fallback to gemini-3.8-flash and pins the session to 3.8-flash.
+ */
+export class ContentFilterError extends AntigravityError {
+    /**
+     * @param {string} message - Error message
+     * @param {string} reason - Specific filter block reason
+     */
+    constructor(message = 'Content filter triggered', reason = 'SAFETY') {
+        super(message, 'CONTENT_FILTER', true, { reason });
+        this.name = 'ContentFilterError';
+        this.reason = reason;
+    }
+}
+
+/**
+ * Check if an error is a content filter error
+ * @param {Error} error - Error to check
+ * @returns {boolean}
+ */
+
+/**
+ * Google sometimes answers HTTP 400 INVALID_ARGUMENT "The request could not be processed by the model. Please retry; ..."
+ * for a perfectly valid request (the identical request succeeds seconds later). It is transient, NOT a client error.
+ */
+export const TRANSIENT_400_MAX_RETRIES = 3;
+export const TRANSIENT_400_DELAYS_MS = [2000, 5000, 10000];
+export function isTransientProcessingError(errorText) {
+    return /could not be processed by the model/i.test(String(errorText || ''));
+}
+/** Error thrown once retries are exhausted: surfaced as 529 overloaded_error so the client retries instead of dying. */
+export function transientProcessingError(errorText) {
+    const e = new Error(`overloaded_error: Google could not process the request after ${TRANSIENT_400_MAX_RETRIES} retries (transient 400): ${String(errorText).slice(0, 160)}`);
+    e.name = 'TransientProcessingError';
+    return e;
+}
+
+export function isContentFilterError(error) {
+    if (error instanceof ContentFilterError || error?.name === 'ContentFilterError') return true;
+    const msg = (error?.message || '').toUpperCase();
+    return msg.includes('CONTENT_FILTER') ||
+        msg.includes('PROHIBITED_CONTENT') ||
+        msg.includes('FINISHREASON: SAFETY') ||
+        msg.includes('BLOCKREASON');
+}
+
+/**
+ * Duplicate tool call error - thrown when the model repeats an identical tool_use
+ * (e.g. Read on the same unchanged file/range) before any SSE event is flushed to the client.
+ * Triggers an immediate retry with temperature + thinking boost and an anti-loop reminder.
+ */
+export class DuplicateToolCallError extends AntigravityError {
+    /**
+     * @param {string} toolName - Tool name (e.g. 'Read')
+     * @param {string} signature - Normalized signature of the repeated call
+     * @param {string} [message] - Error message
+     */
+    constructor(toolName, signature, message = `Duplicate tool_use intercepted: ${toolName}`) {
+        super(message, 'DUPLICATE_TOOL_CALL', true, { toolName, signature });
+        this.name = 'DuplicateToolCallError';
+        this.toolName = toolName;
+        this.signature = signature;
+    }
+}
+
+/**
+ * Check if an error is a duplicate tool call interception error
+ * @param {Error} error - Error to check
+ * @returns {boolean}
+ */
+export function isDuplicateToolCallError(error) {
+    return error instanceof DuplicateToolCallError || error?.name === 'DuplicateToolCallError';
+}
+
+/**
  * Capacity exhausted error - Google's model is at capacity (not user quota)
  * Should retry on same account with shorter delay, not switch accounts immediately
  * Different from QUOTA_EXHAUSTED which indicates user's daily/hourly limit
@@ -262,10 +338,14 @@ export default {
     ApiError,
     NativeModuleError,
     EmptyResponseError,
+    ContentFilterError,
+    DuplicateToolCallError,
     CapacityExhaustedError,
     isRateLimitError,
     isAuthError,
     isAccountForbiddenError,
     isEmptyResponseError,
+    isContentFilterError,
+    isDuplicateToolCallError,
     isCapacityExhaustedError
 };
