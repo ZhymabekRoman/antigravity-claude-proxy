@@ -7,6 +7,7 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { sanitizeForCopilot } from './copilot-fallback.js';
+import { MODEL_HYDROGEN_MEDIUM } from '../cloudcode/model-splitter.js';
 import {
     streamAnthropicPassThrough,
     sendAnthropicPassThrough,
@@ -135,6 +136,21 @@ export function findUpstreamForModel(rawModel) {
     }
 
     return null;
+}
+
+/**
+ * Per-upstream "via Gemini" flag. When `upstreams.<name>.viaGemini` is a model string (or `true` ->
+ * DEFAULT_VIA_GEMINI_MODEL), requests that would go to that upstream are served by the regular Gemini
+ * (Cloud Code) path instead, using that model. Reuses ALL existing Gemini logic (accounts, sessions,
+ * breaker, splitter, fallbacks); nothing is duplicated.
+ * @param {{ name: string, config: Object }} upstream
+ * @returns {string|null} Gemini model to use, or null when the flag is off
+ */
+export const DEFAULT_VIA_GEMINI_MODEL = MODEL_HYDROGEN_MEDIUM;   // single source of truth (model-splitter.js)
+export function getViaGeminiModel(upstream) {
+    const v = upstream?.config?.viaGemini;
+    if (v === true) return DEFAULT_VIA_GEMINI_MODEL;
+    return (typeof v === 'string' && /^gemini-/i.test(v)) ? v : null;
 }
 
 /**

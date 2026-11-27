@@ -5,6 +5,7 @@
  * Anthropic-compatible upstream provider (CheaperInference, OpenRouter, self-hosted gateways).
  */
 
+import { getClientSignal } from '../../utils/client-signal.js';
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../../utils/logger.js';
 import { config } from '../../config.js';
@@ -48,6 +49,7 @@ async function fetchWithRetry(url, options, upstreamConfig) {
             try { await res.text(); } catch {}
         } catch (err) {
             lastErr = err;
+            if (options?.signal?.aborted) throw err;
             if (attempt === retries) throw err;
             logger.warn(`[Upstream][PassThrough] ⚠️ ${err.message}, retry ${attempt + 1}/${retries}`);
         }
@@ -110,6 +112,7 @@ export async function* streamAnthropicPassThrough(anthropicRequest, upstreamConf
 
     const tStart = Date.now();
     const response = await fetchWithRetry(url, {
+        signal: getClientSignal(anthropicRequest),
         method: 'POST',
         headers,
         body: JSON.stringify(payload)
@@ -206,6 +209,7 @@ export async function sendAnthropicPassThrough(anthropicRequest, upstreamConfig)
     logger.info(`[Upstream][PassThrough] 🌐 Dispatching non-streaming request -> ${url} (model: ${targetModel})`);
 
     const response = await fetchWithRetry(url, {
+        signal: getClientSignal(anthropicRequest),
         method: 'POST',
         headers,
         body: JSON.stringify(payload)
